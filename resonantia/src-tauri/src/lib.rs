@@ -1,7 +1,10 @@
+use hex::encode as hex_encode;
 use regex::Regex;
 use reqwest::Client;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -17,6 +20,7 @@ struct AppState {
     gateway_base_url: RwLock<String>,
     ollama_base_url: RwLock<String>,
     ollama_model: RwLock<String>,
+    layout_overrides: RwLock<LayoutOverrides>,
     config_path: RwLock<Option<PathBuf>>,
 }
 
@@ -27,9 +31,26 @@ impl Default for AppState {
             gateway_base_url: RwLock::new(DEFAULT_GATEWAY_BASE_URL.to_string()),
             ollama_base_url: RwLock::new(DEFAULT_OLLAMA_BASE_URL.to_string()),
             ollama_model: RwLock::new(DEFAULT_OLLAMA_MODEL.to_string()),
+            layout_overrides: RwLock::new(LayoutOverrides::default()),
             config_path: RwLock::new(None),
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct LayoutPoint {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct LayoutOverrides {
+    #[serde(default)]
+    session_overrides: HashMap<String, LayoutPoint>,
+    #[serde(default)]
+    node_overrides: HashMap<String, LayoutPoint>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -38,6 +59,8 @@ struct AppConfig {
     gateway_base_url: String,
     ollama_base_url: String,
     ollama_model: String,
+    #[serde(default)]
+    layout_overrides: LayoutOverrides,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -133,6 +156,8 @@ struct GraphNodeDto {
     psi: f32,
     parent_node_id: Option<String>,
     size: i32,
+    #[serde(default)]
+    synthetic_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -159,6 +184,8 @@ struct NodeDto {
     rho: f32,
     kappa: f32,
     psi: f32,
+    #[serde(default)]
+    synthetic_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -225,6 +252,44 @@ fn map_err(prefix: &str, err: impl std::fmt::Display) -> String {
     format!("{prefix}: {err}")
 }
 
+fn node_fingerprint(session_id: &str, timestamp: &str, tier: &str, parent_node_id: Option<&str>, psi: f32) -> String {
+    let canonical = format!(
+        "{}|{}|{}|{}|{:.6}",
+        session_id.trim(),
+        timestamp.trim(),
+        tier.trim(),
+        parent_node_id.unwrap_or("").trim(),
+        psi
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    hex_encode(hasher.finalize())
+}
+
+fn stamp_graph_node_ids(response: &mut GraphResponse) {
+    for node in &mut response.nodes {
+        node.synthetic_id = node_fingerprint(
+            &node.session_id,
+            &node.timestamp,
+            &node.tier,
+            node.parent_node_id.as_deref(),
+            node.psi,
+        );
+    }
+}
+
+fn stamp_list_node_ids(response: &mut ListNodesResponse) {
+    for node in &mut response.nodes {
+        node.synthetic_id = node_fingerprint(
+            &node.session_id,
+            &node.timestamp,
+            &node.tier,
+            node.parent_node_id.as_deref(),
+            node.psi,
+        );
+    }
+}
+
 fn read_current_config(state: &AppState) -> Result<AppConfig, String> {
     let gateway_base_url = state
         .gateway_base_url
@@ -244,10 +309,17 @@ fn read_current_config(state: &AppState) -> Result<AppConfig, String> {
         .map_err(|err| map_err("failed to read ollama model", err))?
         .clone();
 
+    let layout_overrides = state
+        .layout_overrides
+        .read()
+        .map_err(|err| map_err("failed to read layout overrides", err))?
+        .clone();
+
     Ok(AppConfig {
         gateway_base_url,
         ollama_base_url,
         ollama_model,
+        layout_overrides,
     })
 }
 
@@ -314,6 +386,14 @@ fn load_persisted_config(state: &AppState) -> Result<(), String> {
             .write()
             .map_err(|err| map_err("failed to restore ollama model", err))?;
         *guard = config.ollama_model;
+    }
+
+    {
+        let mut guard = state
+            .layout_overrides
+            .write()
+            .map_err(|err| map_err("failed to restore layout overrides", err))?;
+        *guard = config.layout_overrides;
     }
 
     Ok(())
@@ -463,6 +543,46 @@ fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
+fn get_layout_overrides(state: tauri::State<'_, AppState>) -> Result<LayoutOverrides, String> {
+    state
+        .layout_overrides
+        .read()
+        .map_err(|err| map_err("failed to read layout overrides", err))
+        .map(|guard| guard.clone())
+}
+
+#[tauri::command]
+fn save_layout_overrides(
+    state: tauri::State<'_, AppState>,
+    layout_overrides: LayoutOverrides,
+) -> Result<(), String> {
+    {
+        let mut guard = state
+            .layout_overrides
+            .write()
+            .map_err(|err| map_err("failed to update layout overrides", err))?;
+        *guard = layout_overrides;
+    }
+
+    persist_current_config(&state)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reset_layout_overrides(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut guard = state
+            .layout_overrides
+            .write()
+            .map_err(|err| map_err("failed to reset layout overrides", err))?;
+        *guard = LayoutOverrides::default();
+    }
+
+    persist_current_config(&state)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn set_gateway_base_url(state: tauri::State<'_, AppState>, base_url: String) -> Result<(), String> {
     {
         let mut guard = state
@@ -539,7 +659,7 @@ async fn list_nodes(
 
     let url = with_query(&base_url, "/api/v1/nodes", limit, session_id)?;
 
-    state
+    let mut response = state
         .http
         .get(url)
         .send()
@@ -549,7 +669,10 @@ async fn list_nodes(
         .map_err(|err| map_err("list nodes response status failed", err))?
         .json::<ListNodesResponse>()
         .await
-        .map_err(|err| map_err("list nodes response parse failed", err))
+        .map_err(|err| map_err("list nodes response parse failed", err))?;
+
+    stamp_list_node_ids(&mut response);
+    Ok(response)
 }
 
 #[tauri::command]
@@ -566,7 +689,7 @@ async fn get_graph(
 
     let url = with_query(&base_url, "/api/v1/graph", limit, session_id)?;
 
-    state
+    let mut response = state
         .http
         .get(url)
         .send()
@@ -576,7 +699,10 @@ async fn get_graph(
         .map_err(|err| map_err("graph response status failed", err))?
         .json::<GraphResponse>()
         .await
-        .map_err(|err| map_err("graph response parse failed", err))
+        .map_err(|err| map_err("graph response parse failed", err))?;
+
+    stamp_graph_node_ids(&mut response);
+    Ok(response)
 }
 
 #[tauri::command]
@@ -718,6 +844,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_config,
+            get_layout_overrides,
+            save_layout_overrides,
+            reset_layout_overrides,
             set_gateway_base_url,
             set_ollama_config,
             get_health,

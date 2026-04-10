@@ -24,6 +24,7 @@ export interface GraphNodeDto {
   psi: number;
   parentNodeId: string | null;
   size: number;
+  syntheticId: string;
 }
 
 export interface GraphEdgeDto {
@@ -53,6 +54,7 @@ export interface NodeDto {
   rho: number;
   kappa: number;
   psi: number;
+  syntheticId: string;
 }
 
 export interface StoreContextResponse {

@@ -11,15 +11,7 @@
     navigate: { sessionId: string };
   }>();
 
-  $: avec = data?.nodeDto?.userAvec ?? data?.node
-    ? {
-        stability: 0,
-        friction: 0,
-        logic: 0,
-        autonomy: 0,
-        psi: data!.node.psi,
-      }
-    : null;
+  $: avec = data?.nodeDto?.userAvec ?? null;
 
   $: rho   = data?.nodeDto?.rho   ?? null;
   $: kappa = data?.nodeDto?.kappa ?? null;

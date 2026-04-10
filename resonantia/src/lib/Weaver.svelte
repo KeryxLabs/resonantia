@@ -21,8 +21,12 @@
   let raf: number;
   let container: HTMLDivElement;
 
-  function W() { return canvas?.width  ?? 800; }
-  function H() { return canvas?.height ?? 600; }
+  let viewportWidth = 800;
+  let viewportHeight = 600;
+  let deviceScale = 1;
+
+  function W() { return viewportWidth; }
+  function H() { return viewportHeight; }
 
   // ── Data ──────────────────────────────────────────────────
   let graph: GraphResponse | null = null;
@@ -37,8 +41,9 @@
   let camX = 0, camY = 0, camScale = 1;
   let targetCamX = 0, targetCamY = 0, targetCamScale = 1;
 
-  const WAVE_SCALE     = 3.5;
-  const COLLAPSE_SCALE = 8;
+  const CONSTELLATION_SCALE = 1.2;
+  const WAVE_SCALE     = 4.6;
+  const COLLAPSE_SCALE = 10.2;
   const LERP           = 0.09;
 
   // ── Level state machine ────────────────────────────────────────
@@ -48,6 +53,10 @@
   let selectedNode:    GraphNodeDto    | null = null;
   let cardData:    CollapseCardData | null = null;
   let cardVisible  = false;
+
+  function matchesSelectedNode(graphNode: GraphNodeDto, dto: NodeDto) {
+    return dto.syntheticId === graphNode.syntheticId;
+  }
 
   // ── Interaction ───────────────────────────────────────────
   let dragging    = false;
@@ -81,10 +90,45 @@
   function canvasXY(e: MouseEvent): Vec2 {
     const rect = canvas.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) * (canvas.width  / rect.width),
-      y: (e.clientY - rect.top)  * (canvas.height / rect.height),
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
     };
   }
+
+  function hashUnit(input: string): number {
+    let hash = 2166136261;
+    for (let i = 0; i < input.length; i++) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return ((hash >>> 0) % 10000) / 10000;
+  }
+
+  function sessionKey(sessionId: string): string {
+    return sessionId.startsWith('s:') ? sessionId : `s:${sessionId}`;
+  }
+
+  function sessionRenderPos(session: GraphSessionDto): Vec2 {
+    const base = sessionPos[session.id];
+    if (!base) return { x: W() / 2, y: H() / 2 };
+    if (level !== 0) return base;
+
+    const seed = hashUnit(session.id);
+    const drift = 8 + Math.min(12, session.nodeCount * 0.35);
+    return {
+      x: base.x + Math.sin(t * 0.22 + seed * Math.PI * 2) * drift,
+      y: base.y + Math.cos(t * 0.18 + seed * Math.PI * 1.7) * drift * 0.72,
+    };
+  }
+
+  function sessionHitRadius(s: GraphSessionDto): number {
+    return Math.max(18, (sessionRadius(s) + 14) * camScale);
+  }
+
+  function nodeHitRadius(n: GraphNodeDto): number {
+    return Math.max(16, (nodeRadius(n) + 12) * camScale);
+  }
+
 
   // ── Data loading ─────────────────────────────────────────────
   async function loadGraph() {
@@ -95,7 +139,7 @@
       layoutConstellation();
       camX = targetCamX = W() / 2;
       camY = targetCamY = H() / 2;
-      camScale = targetCamScale = 1;
+      camScale = targetCamScale = CONSTELLATION_SCALE;
     } catch (e) {
       error = String(e);
     } finally {
@@ -105,44 +149,86 @@
 
   function layoutConstellation() {
     if (!graph) return;
+    Object.keys(sessionPos).forEach(key => delete sessionPos[key]);
+    Object.keys(nodePos).forEach(key => delete nodePos[key]);
     const cx = W() / 2, cy = H() / 2;
     const n  = graph.sessions.length;
-    const r  = Math.min(W(), H()) * 0.28;
+    const spread = Math.min(W(), H()) * 0.3;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
     graph.sessions.forEach((s, i) => {
-      const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+      const seed = hashUnit(s.id);
+      const angle = i * goldenAngle + seed * 1.8;
+      const radial = spread * (0.24 + Math.sqrt((i + 0.5) / Math.max(1, n)) * 0.74);
+      const bendX = Math.sin(angle * 1.4 + seed * 8) * spread * 0.16;
+      const bendY = Math.cos(angle * 1.1 + seed * 6) * spread * 0.12;
       sessionPos[s.id] = {
-        x: cx + Math.cos(angle) * r,
-        y: cy + Math.sin(angle) * r * 0.72,
+        x: cx + Math.cos(angle) * radial + bendX,
+        y: cy + Math.sin(angle) * radial * 0.76 + bendY,
       };
     });
 
-    graph.nodes.forEach((nd, i) => {
-      const sp = sessionPos[nd.sessionId];
+      graph.sessions.forEach((session, sessionIndex) => {
+        const sp = sessionPos[sessionKey(session.id)];
       if (!sp) return;
-      const angle = (i * 2.399) % (Math.PI * 2);
-      const dist  = 22 + (i % 5) * 9;
-      nodePos[nd.id] = {
-        x: sp.x + Math.cos(angle) * dist,
-        y: sp.y + Math.sin(angle) * dist,
-      };
+
+        const sessionNodes = graph!.nodes.filter(node => sessionKey(node.sessionId) === sessionKey(session.id));
+      const orbitRadius = Math.max(54, sessionRadius(session) + 20);
+      const seed = sessionIndex * 0.73 + session.id.length * 0.11;
+
+      sessionNodes.forEach((node, nodeIndex) => {
+        const progress = (nodeIndex + 1) / (sessionNodes.length + 1);
+        const radial = orbitRadius * (0.24 + Math.sqrt(progress) * 0.78);
+        const angle = seed + nodeIndex * 2.399963229728653;
+        nodePos[node.id] = {
+          x: sp.x + Math.cos(angle) * radial,
+          y: sp.y + Math.sin(angle) * radial * 0.72,
+        };
+      });
     });
   }
 
   function sessionRadius(s: GraphSessionDto) { return 10 + s.nodeCount * 2.2; }
-  function nodeRadius(n: GraphNodeDto)        { return 4  + n.psi * 1.6;      }
+  function nodeRadius(n: GraphNodeDto)        { return 4.2 + n.psi * 1.35;    }
+
+  function collapseDescriptors(avec: { stability: number; friction: number; logic: number; autonomy: number }): string {
+    const dims: [string, number][] = [
+      ['stability', avec.stability],
+      ['friction', avec.friction],
+      ['logic', avec.logic],
+      ['autonomy', avec.autonomy],
+    ];
+
+    return dims
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([label]) => label)
+      .join(' · ');
+  }
+
+  function momentWhisperLabel(node: GraphNodeDto): string {
+    const parts = node.label.split(' ');
+    if (parts.length >= 2) return parts.slice(0, 2).join(' ');
+    return shortLabel(node.label, 2);
+  }
+
+  function waveTitle(session: GraphSessionDto): string {
+    return shortLabel(session.label, 3);
+  }
 
   // ── Navigation ────────────────────────────────────────────────
   function descendToWave(s: GraphSessionDto) {
+    closeTransientUi();
     selectedSession = s;
     selectedNode    = null;
     closeCard();
     level = 1;
-    const sp = sessionPos[s.id];
+    const sp = sessionRenderPos(s);
     if (sp) { targetCamX = sp.x; targetCamY = sp.y; targetCamScale = WAVE_SCALE; }
   }
 
   async function descendToCollapse(n: GraphNodeDto) {
+    closeTransientUi();
     selectedNode = n;
     level        = 2;
     const np = nodePos[n.id];
@@ -151,20 +237,21 @@
     cardData = {
       node:            n,
       nodeDto:         null,
-      relatedSessions: graph?.sessions.filter(s => s.id !== n.sessionId).slice(0, 4) ?? [],
+      relatedSessions: graph?.sessions.filter(s => s.id !== sessionKey(n.sessionId)).slice(0, 4) ?? [],
     };
-    setTimeout(() => { cardVisible = true; }, 650);
+    setTimeout(() => { cardVisible = true; }, 520);
 
     try {
       const res = await invoke<{ nodes: NodeDto[] }>('list_nodes', {
-        limit: 50, sessionId: n.sessionId,
+        limit: Math.max(selectedSession?.nodeCount ?? 50, 50), sessionId: n.sessionId,
       });
-      const dto = res.nodes[0] ?? null;
+      const dto = res.nodes.find(node => matchesSelectedNode(n, node)) ?? null;
       if (dto && cardData) cardData = { ...cardData, nodeDto: dto };
     } catch { /* card shows what it has */ }
   }
 
   function surfaceToWave() {
+    closeTransientUi();
     selectedNode = null;
     closeCard();
     level = 1;
@@ -175,16 +262,24 @@
   }
 
   function surfaceToConstellation() {
+    closeTransientUi();
     selectedSession = null;
     selectedNode    = null;
     closeCard();
     level = 0;
-    targetCamX = W() / 2; targetCamY = H() / 2; targetCamScale = 1;
+    targetCamX = W() / 2; targetCamY = H() / 2; targetCamScale = CONSTELLATION_SCALE;
   }
 
   function closeCard() {
     cardVisible = false;
     setTimeout(() => { if (!cardVisible) cardData = null; }, 500);
+  }
+
+  function closeTransientUi() {
+    menuOpen = false;
+    composeOpen = false;
+    calibrateOpen = false;
+    settingsOpen = false;
   }
 
   function handleNavigate(e: CustomEvent<{ sessionId: string }>) {
@@ -206,23 +301,27 @@
 
   function drawEdges() {
     if (!graph || level > 0) return;
-    graph.edges.forEach(e => {
-      const sp = sessionPos[e.source]; const tp = sessionPos[e.target];
+    const graphData = graph;
+    graphData.edges.forEach(e => {
+      const sourceSession = graphData.sessions.find(session => session.id === e.source);
+      const targetSession = graphData.sessions.find(session => session.id === e.target);
+      if (!sourceSession || !targetSession) return;
+      const sp = sessionRenderPos(sourceSession);
+      const tp = sessionRenderPos(targetSession);
       if (!sp || !tp) return;
-      const ss = toScreen(sp.x, sp.y); const ts = toScreen(tp.x, tp.y);
-      const mx = (ss.x + ts.x) / 2 + Math.sin(e.id.length * 0.7) * 30;
-      const my = (ss.y + ts.y) / 2 + Math.cos(e.id.length * 0.5) * 20;
-      const grad = ctx.createLinearGradient(ss.x, ss.y, ts.x, ts.y);
+      const mx = (sp.x + tp.x) / 2 + Math.sin(e.id.length * 0.7) * 30;
+      const my = (sp.y + tp.y) / 2 + Math.cos(e.id.length * 0.5) * 20;
+      const grad = ctx.createLinearGradient(sp.x, sp.y, tp.x, tp.y);
       grad.addColorStop(0,    'rgba(255,255,255,0)');
       grad.addColorStop(0.35, 'rgba(255,255,255,0.06)');
       grad.addColorStop(0.5,  e.kind === 'resonance' ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.04)');
       grad.addColorStop(0.65, 'rgba(255,255,255,0.06)');
       grad.addColorStop(1,    'rgba(255,255,255,0)');
       ctx.beginPath();
-      ctx.moveTo(ss.x, ss.y);
-      ctx.quadraticCurveTo(mx, my, ts.x, ts.y);
+      ctx.moveTo(sp.x, sp.y);
+      ctx.quadraticCurveTo(mx, my, tp.x, tp.y);
       ctx.strokeStyle = grad;
-      ctx.lineWidth   = e.kind === 'resonance' ? 0.8 : 0.4;
+      ctx.lineWidth   = (e.kind === 'resonance' ? 0.8 : 0.4) / camScale;
       ctx.setLineDash(e.kind === 'temporal' ? [3, 6] : []);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -234,14 +333,13 @@
     const baseAvec = { stability:0.7, friction:0.2, logic:0.8, autonomy:0.85, psi:2.55 };
 
     graph.sessions.forEach(s => {
-      const sp      = sessionPos[s.id];
+      const sp      = sessionRenderPos(s);
       if (!sp) return;
-      const sc      = toScreen(sp.x, sp.y);
       const isFocus = selectedSession?.id === s.id;
 
       if (level > 0 && !isFocus) {
         ctx.beginPath();
-        ctx.arc(sc.x, sc.y, 2, 0, Math.PI * 2);
+        ctx.arc(sp.x, sp.y, 2, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255,255,255,0.07)';
         ctx.fill();
         return;
@@ -253,20 +351,20 @@
         : Math.sin(t * 1.1 + sp.x * 0.008) * 1.2;
 
       ctx.beginPath();
-      ctx.arc(sc.x, sc.y, r + pulse + 12, 0, Math.PI * 2);
+      ctx.arc(sp.x, sp.y, r + pulse + 12, 0, Math.PI * 2);
       ctx.fillStyle = avecColor(baseAvec, 0.03);
       ctx.fill();
 
       ctx.beginPath();
-      ctx.arc(sc.x, sc.y, r + pulse, 0, Math.PI * 2);
+      ctx.arc(sp.x, sp.y, r + pulse, 0, Math.PI * 2);
       ctx.fillStyle   = avecColor(baseAvec, isFocus ? 0.14 : 0.07);
       ctx.fill();
       ctx.strokeStyle = avecColor(baseAvec, isFocus ? 0.48 : 0.18);
-      ctx.lineWidth   = isFocus ? 0.8 : 0.5;
+      ctx.lineWidth   = (isFocus ? 0.8 : 0.5) / camScale;
       ctx.stroke();
 
       ctx.beginPath();
-      ctx.arc(sc.x, sc.y, 2.5, 0, Math.PI * 2);
+      ctx.arc(sp.x, sp.y, 2.5, 0, Math.PI * 2);
       ctx.fillStyle = avecColor(baseAvec, 0.9);
       ctx.fill();
 
@@ -274,7 +372,7 @@
         ctx.fillStyle = 'rgba(255,255,255,0.22)';
         ctx.font      = `10px ${FONT_MONO}`;
         ctx.textAlign = 'center';
-        ctx.fillText(shortLabel(s.label, 3), sc.x, sc.y + r + 15);
+        ctx.fillText(shortLabel(s.label, 3), sp.x, sp.y + r + 15);
       }
     });
   }
@@ -283,63 +381,137 @@
     if (level !== 1 || !selectedSession) return;
     const sp = sessionPos[selectedSession.id];
     if (!sp) return;
-    const sc  = toScreen(sp.x, sp.y);
-    const r   = sessionRadius(selectedSession);
-    const rx  = (r + 30) * camScale;
-    const ry  = (r + 30) * camScale * 0.72;
+    const orbit = Math.max(54, sessionRadius(selectedSession) + 20);
+    const rx  = orbit + 18;
+    const ry  = (orbit + 18) * 0.74;
     const oda = 4 + Math.sin(t * 0.5);
 
     ctx.beginPath();
-    ctx.ellipse(sc.x, sc.y, rx + 22, ry + 16, 0, 0, Math.PI * 2);
+    ctx.ellipse(sp.x, sp.y, rx + 22, ry + 16, 0, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(122,170,122,0.04)';
-    ctx.lineWidth   = 12;
+    ctx.lineWidth   = 12 / camScale;
     ctx.setLineDash([]);
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.ellipse(sc.x, sc.y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.ellipse(sp.x, sp.y, rx, ry, 0, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(122,170,122,0.2)';
-    ctx.lineWidth   = 0.5;
+    ctx.lineWidth   = 0.5 / camScale;
     ctx.setLineDash([oda, oda * 1.6]);
     ctx.stroke();
     ctx.setLineDash([]);
   }
 
+  function drawWaveThreads() {
+    if (level !== 1 || !selectedSession || !graph) return;
+    const session = selectedSession;
+    const sp = sessionPos[session.id];
+    if (!sp) return;
+
+    const sessionNodes = graph.nodes.filter(n => sessionKey(n.sessionId) === sessionKey(session.id));
+    if (sessionNodes.length === 0) return;
+
+    ctx.strokeStyle = 'rgba(122,170,122,0.16)';
+    ctx.lineWidth = 0.6 / camScale;
+
+    sessionNodes.forEach((node, index) => {
+      const np = nodePos[node.id];
+      if (!np) return;
+
+      ctx.beginPath();
+      ctx.moveTo(sp.x, sp.y);
+      ctx.lineTo(np.x, np.y);
+      ctx.stroke();
+
+      if (index > 0) {
+        const prev = nodePos[sessionNodes[index - 1].id];
+        if (!prev) return;
+        ctx.beginPath();
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(np.x, np.y);
+        ctx.strokeStyle = 'rgba(122,170,122,0.11)';
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(122,170,122,0.16)';
+      }
+    });
+  }
+
   function drawNodes() {
     if (!graph || level < 1 || !selectedSession) return;
     const av = { stability:0.75, friction:0.18, logic:0.85, autonomy:0.9, psi:2.68 };
-    const sessionNodes = graph.nodes.filter(n => n.sessionId === selectedSession!.id);
+    const sessionNodes = graph.nodes.filter(n => sessionKey(n.sessionId) === sessionKey(selectedSession!.id));
 
     sessionNodes.forEach(n => {
       const np = nodePos[n.id];
       if (!np) return;
-      const sc         = toScreen(np.x, np.y);
       const r          = nodeRadius(n);
       const isSelected = selectedNode?.id === n.id;
 
       if (level === 2 && !isSelected) {
         ctx.beginPath();
-        ctx.arc(sc.x, sc.y, 2, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        ctx.arc(np.x, np.y, 2.6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
         ctx.fill();
         return;
       }
 
       const pulse = Math.sin(t * 1.8 + np.x * 0.04);
+      const tierAlpha = n.tier === 'daily' ? 0.32 : n.tier === 'weekly' ? 0.28 : 0.24;
+      const outerAlpha = isSelected ? 0.16 : 0.1;
 
       ctx.beginPath();
-      ctx.arc(sc.x, sc.y, r + pulse + 7, 0, Math.PI * 2);
-      ctx.fillStyle = avecColor(av, isSelected ? 0.1 : 0.05);
+      ctx.arc(np.x, np.y, r + pulse + 7, 0, Math.PI * 2);
+      ctx.fillStyle = avecColor(av, outerAlpha);
       ctx.fill();
 
       ctx.beginPath();
-      ctx.arc(sc.x, sc.y, r + pulse, 0, Math.PI * 2);
-      ctx.fillStyle   = avecColor(av, isSelected ? 0.65 : 0.22);
+      ctx.arc(np.x, np.y, r + pulse, 0, Math.PI * 2);
+      ctx.fillStyle   = avecColor(av, isSelected ? 0.72 : tierAlpha);
       ctx.fill();
-      ctx.strokeStyle = avecColor(av, isSelected ? 0.9 : 0.28);
-      ctx.lineWidth   = isSelected ? 0.8 : 0.5;
+      ctx.strokeStyle = avecColor(av, isSelected ? 0.95 : 0.38);
+      ctx.lineWidth   = (isSelected ? 0.9 : 0.6) / camScale;
       ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(np.x, np.y, Math.max(2.2, r * 0.34), 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(232,245,245,0.78)';
+      ctx.fill();
+
     });
+  }
+
+  function drawWaveLabels() {
+    if (level !== 1 || !graph || !selectedSession) return;
+    const session = selectedSession;
+    const sp = sessionPos[session.id];
+    if (!sp) return;
+
+    const sessionNodes = graph.nodes.filter(n => sessionKey(n.sessionId) === sessionKey(session.id));
+    const labeledMoments = [...sessionNodes]
+      .sort((a, b) => b.psi - a.psi)
+      .slice(0, Math.min(4, sessionNodes.length));
+
+    labeledMoments.forEach(node => {
+      const np = nodePos[node.id];
+      if (!np) return;
+      const sc = toScreen(np.x, np.y);
+      ctx.textAlign = 'center';
+      ctx.font = `600 8px ${FONT_MONO}`;
+      ctx.strokeStyle = 'rgba(7,10,13,0.85)';
+      ctx.lineWidth = 2.4;
+      ctx.strokeText(momentWhisperLabel(node), sc.x, sc.y + 22);
+      ctx.fillStyle = 'rgba(196,223,196,0.42)';
+      ctx.fillText(momentWhisperLabel(node), sc.x, sc.y + 22);
+    });
+
+    const center = toScreen(sp.x, sp.y);
+    ctx.textAlign = 'center';
+    ctx.font = `600 9px ${FONT_MONO}`;
+    ctx.strokeStyle = 'rgba(7,10,13,0.9)';
+    ctx.lineWidth = 2.8;
+    ctx.strokeText(waveTitle(session), center.x, center.y + 28);
+    ctx.fillStyle = 'rgba(210,228,210,0.46)';
+    ctx.fillText(waveTitle(session), center.x, center.y + 28);
   }
 
   function drawCollapseOrb() {
@@ -353,69 +525,89 @@
     };
     const { r, g, b } = avecToRgb(avec);
     const col = `${Math.round(r)},${Math.round(g)},${Math.round(b)}`;
+    const descriptor = collapseDescriptors(avec);
+    const orbX = sc.x;
+    const orbY = sc.y - 12;
     const breathe = Math.sin(t * 1.2) * 4;
+    const shimmer = Math.sin(t * 2.4) * 0.08;
 
-    const glo = ctx.createRadialGradient(sc.x, sc.y, 16, sc.x, sc.y, 90 + breathe);
-    glo.addColorStop(0, `rgba(${col},0.18)`);
+    ctx.beginPath();
+    ctx.ellipse(orbX, orbY + 14, 118, 92, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(122,170,122,0.06)';
+    ctx.lineWidth = 0.6;
+    ctx.setLineDash([3, 7]);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(orbX, orbY + 10, 84, 66, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+    ctx.lineWidth = 18;
+    ctx.setLineDash([]);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(orbX, orbY + 6, 50, 42, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${col},0.045)`;
+    ctx.fill();
+
+    const glo = ctx.createRadialGradient(orbX, orbY, 14, orbX, orbY, 96 + breathe);
+    glo.addColorStop(0, `rgba(${col},0.2)`);
     glo.addColorStop(1, `rgba(${col},0)`);
     ctx.beginPath();
-    ctx.arc(sc.x, sc.y, 90 + breathe, 0, Math.PI * 2);
+    ctx.arc(orbX, orbY, 96 + breathe, 0, Math.PI * 2);
     ctx.fillStyle = glo;
     ctx.fill();
 
     ctx.beginPath();
-    ctx.arc(sc.x, sc.y, 40 + breathe * 0.5, 0, Math.PI * 2);
-    ctx.fillStyle   = `rgba(${col},0.07)`;
+    ctx.arc(orbX, orbY, 42 + breathe * 0.5, 0, Math.PI * 2);
+    ctx.fillStyle   = `rgba(${col},0.075)`;
     ctx.fill();
-    ctx.strokeStyle = `rgba(${col},0.18)`;
+    ctx.strokeStyle = `rgba(${col},0.22)`;
     ctx.lineWidth   = 0.5;
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(sc.x, sc.y, 26 + breathe * 0.3, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${col},0.22)`;
+    ctx.arc(orbX, orbY, 28 + breathe * 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${col},${0.24 + shimmer})`;
     ctx.fill();
 
     ctx.beginPath();
-    ctx.arc(sc.x, sc.y, 14, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${col},0.78)`;
+    ctx.arc(orbX, orbY, 17, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${col},0.82)`;
     ctx.fill();
 
     ctx.beginPath();
-    ctx.arc(sc.x - 5, sc.y - 5, 5, 0, Math.PI * 2);
+    ctx.arc(orbX - 6, orbY - 6, 5.2, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(${Math.min(255,Math.round(r+45))},${Math.min(255,Math.round(g+45))},${Math.min(255,Math.round(b+45))},0.55)`;
     ctx.fill();
 
-    const corners: [Vec2, number][] = [
-      [{ x: 0,   y: 0   }, 0.10],
-      [{ x: W(), y: 0   }, 0.07],
-      [{ x: 0,   y: H() }, 0.09],
-      [{ x: W(), y: H() }, 0.06],
-    ];
-    corners.forEach(([c, alpha]) => {
+    [
+      { x: orbX - 34, y: orbY - 18, radius: 1.8, alpha: 0.18 },
+      { x: orbX + 28, y: orbY + 20, radius: 1.4, alpha: 0.14 },
+      { x: orbX + 40, y: orbY - 10, radius: 1.2, alpha: 0.12 },
+    ].forEach(mote => {
       ctx.beginPath();
-      ctx.moveTo(sc.x, sc.y);
-      ctx.lineTo(c.x, c.y);
-      ctx.strokeStyle = `rgba(${col},${alpha})`;
-      ctx.lineWidth   = 0.4;
-      ctx.setLineDash([2, 6]);
+      ctx.arc(mote.x, mote.y, mote.radius + Math.sin(t * 1.5 + mote.x * 0.03) * 0.2, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${col},${mote.alpha})`;
+      ctx.fill();
+    });
+
+    const threads: [{ x: number; y: number; c1x: number; c1y: number; c2x: number; c2y: number; alpha: number }, ...Array<{ x: number; y: number; c1x: number; c1y: number; c2x: number; c2y: number; alpha: number }>] = [
+      { x: W() - 18, y: 22, c1x: orbX + 44, c1y: orbY - 26, c2x: W() - 90, c2y: 40, alpha: 0.14 },
+      { x: 22, y: 34, c1x: orbX - 46, c1y: orbY - 18, c2x: 80, c2y: 46, alpha: 0.1 },
+      { x: W() - 24, y: H() - 86, c1x: orbX + 36, c1y: orbY + 26, c2x: W() - 72, c2y: H() - 130, alpha: 0.08 },
+    ];
+    threads.forEach(thread => {
+      ctx.beginPath();
+      ctx.moveTo(orbX, orbY);
+      ctx.bezierCurveTo(thread.c1x, thread.c1y, thread.c2x, thread.c2y, thread.x, thread.y);
+      ctx.strokeStyle = `rgba(${col},${thread.alpha})`;
+      ctx.lineWidth   = 0.45;
+      ctx.setLineDash([2, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
     });
 
-    ctx.textAlign = 'center';
-    const ts = cardData?.node?.timestamp ? formatTimestamp(cardData.node.timestamp) : '';
-    if (ts) {
-      ctx.font      = `11px ${FONT_MONO}`;
-      ctx.fillStyle = 'rgba(255,255,255,0.42)';
-      ctx.fillText(ts, sc.x, sc.y + 74);
-    }
-    const tier = cardData?.node?.tier;
-    if (tier) {
-      ctx.font      = `9px ${FONT_MONO}`;
-      ctx.fillStyle = 'rgba(255,255,255,0.2)';
-      ctx.fillText(tier.toLowerCase(), sc.x, sc.y + 90);
-    }
   }
 
   function drawHints() {
@@ -443,7 +635,9 @@
     camY     += (targetCamY     - camY)     * LERP;
     camScale += (targetCamScale - camScale) * LERP;
 
-    ctx.clearRect(0, 0, W(), H());
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
     ctx.fillStyle = '#0a0b0e';
     ctx.fillRect(0, 0, W(), H());
 
@@ -456,9 +650,11 @@
     drawEdges();
     drawSessions();
     drawWaveBoundary();
+    drawWaveThreads();
     drawNodes();
     ctx.restore();
 
+    drawWaveLabels();
     drawCollapseOrb();
     drawHints();
 
@@ -482,14 +678,23 @@
   // ── Resize ───────────────────────────────────────────────────
   function resize() {
     if (!canvas || !container) return;
-    const w = container.offsetWidth, h = container.offsetHeight;
+    const rect = container.getBoundingClientRect();
+    const w = Math.round(Math.max(rect.width, window.innerWidth));
+    const h = Math.round(Math.max(rect.height, window.innerHeight));
     if (w === 0 || h === 0) return;
-    canvas.width  = w;
-    canvas.height = h;
+    viewportWidth = w;
+    viewportHeight = h;
+    deviceScale = Math.max(window.devicePixelRatio || 1, 1);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    canvas.width  = Math.round(w * deviceScale);
+    canvas.height = Math.round(h * deviceScale);
+    ctx?.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
     layoutConstellation();
     if (level === 0) {
       camX = targetCamX = W() / 2;
       camY = targetCamY = H() / 2;
+      camScale = targetCamScale = CONSTELLATION_SCALE;
     }
   }
 
@@ -516,16 +721,16 @@
     if (didDrag) return;
 
     const { x: sx, y: sy } = canvasXY(e);
-    const world = toWorld(sx, sy);
 
     if (level === 2) { surfaceToWave(); return; }
 
     if (level === 1 && selectedSession) {
-      const sessionNodes = graph?.nodes.filter(n => n.sessionId === selectedSession!.id) ?? [];
+      const sessionNodes = graph?.nodes.filter(n => sessionKey(n.sessionId) === sessionKey(selectedSession!.id)) ?? [];
       for (const n of sessionNodes) {
         const np = nodePos[n.id];
         if (!np) continue;
-        if (Math.hypot(world.x - np.x, world.y - np.y) < nodeRadius(n) + 12) {
+        const sc = toScreen(np.x, np.y);
+        if (Math.hypot(sx - sc.x, sy - sc.y) < nodeHitRadius(n)) {
           descendToCollapse(n);
           return;
         }
@@ -536,9 +741,10 @@
 
     if (level === 0 && graph) {
       for (const s of graph.sessions) {
-        const sp = sessionPos[s.id];
+        const sp = sessionRenderPos(s);
         if (!sp) continue;
-        if (Math.hypot(world.x - sp.x, world.y - sp.y) < sessionRadius(s) + 14) {
+        const sc = toScreen(sp.x, sp.y);
+        if (Math.hypot(sx - sc.x, sy - sc.y) < sessionHitRadius(s)) {
           descendToWave(s);
           return;
         }
@@ -551,6 +757,61 @@
   async function checkHealth() {
     try { await invoke('get_health'); healthy = true; }
     catch { healthy = false; }
+  }
+
+  // ── Menu / Settings ───────────────────────────────────────
+  let menuOpen = false;
+  let settingsOpen = false;
+  let settingsLoading = false;
+  let settingsSaving = false;
+  let settingsError: string | null = null;
+  let settingsSaved = false;
+  let gatewayBaseUrl = '';
+  let ollamaBaseUrl = '';
+  let ollamaModel = '';
+
+  async function openSettings() {
+    menuOpen = false;
+    settingsOpen = true;
+    settingsLoading = true;
+    settingsError = null;
+    settingsSaved = false;
+
+    try {
+      const config = await invoke<{
+        gatewayBaseUrl: string;
+        ollamaBaseUrl: string;
+        ollamaModel: string;
+      }>('get_config');
+      gatewayBaseUrl = config.gatewayBaseUrl;
+      ollamaBaseUrl = config.ollamaBaseUrl;
+      ollamaModel = config.ollamaModel;
+    } catch (err) {
+      settingsError = String(err);
+    } finally {
+      settingsLoading = false;
+    }
+  }
+
+  async function saveSettings() {
+    settingsSaving = true;
+    settingsError = null;
+    settingsSaved = false;
+
+    try {
+      await invoke('set_gateway_base_url', { baseUrl: gatewayBaseUrl.trim() });
+      await invoke('set_ollama_config', {
+        baseUrl: ollamaBaseUrl.trim(),
+        model: ollamaModel.trim(),
+      });
+      settingsSaved = true;
+      await checkHealth();
+      await loadGraph();
+    } catch (err) {
+      settingsError = String(err);
+    } finally {
+      settingsSaving = false;
+    }
   }
 
   // ── Compose ──────────────────────────────────────────────────
@@ -593,6 +854,7 @@
   let calibError: string | null = null;
 
   function openCalibrate() {
+    menuOpen = false;
     calibSessionId = selectedSession?.id ?? '';
     calibError = null;
     calibrateOpen = true;
@@ -619,6 +881,8 @@
   // ── Lifecycle ─────────────────────────────────────────────────
   onMount(() => {
     ctx = canvas.getContext('2d')!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     draw();
     requestAnimationFrame(() => { resize(); loadGraph(); });
     checkHealth();
@@ -652,8 +916,24 @@
     </div>
     <div class="nav-right">
       <span class="status-dot" class:healthy></span>
-      <button class="nav-btn" on:click={loadGraph}>refresh</button>
-      <button class="nav-btn" on:click={openCalibrate}>calibrate</button>
+      <div class="menu-wrap">
+        <button
+          class="nav-btn menu-btn"
+          class:open={menuOpen}
+          on:click={() => (menuOpen = !menuOpen)}
+          aria-label="Open menu"
+          aria-expanded={menuOpen}
+        >
+          ☰
+        </button>
+        {#if menuOpen}
+          <div class="menu-popover" role="menu" aria-label="Weaver actions">
+            <button class="menu-item" on:click={() => { menuOpen = false; loadGraph(); }}>refresh</button>
+            <button class="menu-item" on:click={openCalibrate}>calibrate</button>
+            <button class="menu-item" on:click={openSettings}>settings</button>
+          </div>
+        {/if}
+      </div>
     </div>
   </nav>
 
@@ -722,13 +1002,36 @@
       </div>
     </div>
   {/if}
+
+  {#if settingsOpen}
+    <div class="drawer" role="dialog" aria-label="Settings">
+      <div class="drawer-header">
+        <span class="drawer-title">settings</span>
+        <button class="close-btn" on:click={() => (settingsOpen = false)}>✕</button>
+      </div>
+      <input class="drawer-input" type="text" placeholder="gateway base url" bind:value={gatewayBaseUrl} disabled={settingsLoading || settingsSaving} />
+      <input class="drawer-input" type="text" placeholder="ollama base url" bind:value={ollamaBaseUrl} disabled={settingsLoading || settingsSaving} />
+      <input class="drawer-input" type="text" placeholder="ollama model" bind:value={ollamaModel} disabled={settingsLoading || settingsSaving} />
+      {#if settingsLoading}<p class="drawer-success">loading config…</p>{/if}
+      {#if settingsError}<p class="drawer-error">{settingsError}</p>{/if}
+      {#if settingsSaved}<p class="drawer-success">settings saved</p>{/if}
+      <div class="drawer-actions">
+        <button class="drawer-btn cancel" on:click={() => (settingsOpen = false)}>cancel</button>
+        <button class="drawer-btn submit" on:click={saveSettings} disabled={settingsLoading || settingsSaving}>
+          {settingsSaving ? 'saving…' : 'save'}
+        </button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
   .weaver-root {
-    position: relative;
-    width: 100%;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
     height: 100vh;
+    min-height: 100dvh;
     overflow: hidden;
     background: #0a0b0e;
     font-family: 'Departure Mono', 'Courier New', monospace;
@@ -814,6 +1117,61 @@
     color: rgba(255, 255, 255, 0.75);
     border-color: rgba(255, 255, 255, 0.2);
   }
+
+  .menu-wrap {
+    position: relative;
+  }
+
+  .menu-btn {
+    min-width: 36px;
+    padding: 4px 0;
+    text-align: center;
+    font-size: 13px;
+    line-height: 1;
+  }
+
+  .menu-btn.open {
+    color: rgba(255, 255, 255, 0.72);
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+
+  .menu-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 148px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: rgba(10, 11, 14, 0.97);
+    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  }
+
+  .menu-item {
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-align: left;
+    color: rgba(255, 255, 255, 0.58);
+    background: transparent;
+    border: 0.5px solid transparent;
+    border-radius: 6px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+  }
+
+  .menu-item:hover {
+    color: rgba(255, 255, 255, 0.84);
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
 
   .compose-btn {
     position: absolute;
