@@ -1003,6 +1003,164 @@
   let composeError: string | null = null;
   let composeResult: { psi: number } | null = null;
 
+  type CalibrationVector = {
+    stability: number;
+    friction: number;
+    logic: number;
+    autonomy: number;
+  };
+
+  type CalibrationProfile = {
+    id: string;
+    label: string;
+    blurb: string;
+    trigger: string;
+    values: CalibrationVector;
+  };
+
+  type CalibrationQuestionOption = {
+    label: string;
+    note: string;
+    values: CalibrationVector;
+  };
+
+  type CalibrationQuestion = {
+    prompt: string;
+    options: CalibrationQuestionOption[];
+  };
+
+  const CALIBRATION_PROFILES: CalibrationProfile[] = [
+    {
+      id: 'explorer',
+      label: 'Explorer',
+      blurb: 'Curious, open, and led by discovery.',
+      trigger: 'guided_explorer',
+      values: { stability: 0.42, friction: 0.22, logic: 0.48, autonomy: 0.84 },
+    },
+    {
+      id: 'planner',
+      label: 'Planner',
+      blurb: 'Organizing the field into clear next steps.',
+      trigger: 'guided_planner',
+      values: { stability: 0.76, friction: 0.34, logic: 0.86, autonomy: 0.58 },
+    },
+    {
+      id: 'actor',
+      label: 'Actor',
+      blurb: 'Ready to commit, move, and adjust in motion.',
+      trigger: 'guided_actor',
+      values: { stability: 0.56, friction: 0.72, logic: 0.52, autonomy: 0.9 },
+    },
+    {
+      id: 'anchor',
+      label: 'Anchor',
+      blurb: 'Settling the field before reaching outward.',
+      trigger: 'guided_anchor',
+      values: { stability: 0.88, friction: 0.18, logic: 0.64, autonomy: 0.36 },
+    },
+  ];
+
+  const CALIBRATION_QUESTIONS: CalibrationQuestion[] = [
+    {
+      prompt: 'What would help most right now?',
+      options: [
+        {
+          label: 'Room to explore',
+          note: 'I need space to notice what is emerging.',
+          values: { stability: 0.34, friction: 0.14, logic: 0.4, autonomy: 0.78 },
+        },
+        {
+          label: 'A simple plan',
+          note: 'I want the next steps to feel clear.',
+          values: { stability: 0.72, friction: 0.28, logic: 0.86, autonomy: 0.5 },
+        },
+        {
+          label: 'A push forward',
+          note: 'I need momentum more than more thinking.',
+          values: { stability: 0.48, friction: 0.78, logic: 0.5, autonomy: 0.9 },
+        },
+      ],
+    },
+    {
+      prompt: 'When things feel unclear, what helps you most?',
+      options: [
+        {
+          label: 'I can stay open',
+          note: 'Uncertainty still feels creative and useful.',
+          values: { stability: 0.44, friction: 0.2, logic: 0.42, autonomy: 0.8 },
+        },
+        {
+          label: 'I want more clarity',
+          note: 'Things will move once the picture sharpens.',
+          values: { stability: 0.78, friction: 0.3, logic: 0.88, autonomy: 0.56 },
+        },
+        {
+          label: 'I would rather act',
+          note: 'The answer will show up once I begin.',
+          values: { stability: 0.52, friction: 0.74, logic: 0.54, autonomy: 0.88 },
+        },
+      ],
+    },
+    {
+      prompt: 'How do you want to make decisions today?',
+      options: [
+        {
+          label: 'Follow what feels alive',
+          note: 'I want curiosity to lead for a bit.',
+          values: { stability: 0.38, friction: 0.24, logic: 0.46, autonomy: 0.82 },
+        },
+        {
+          label: 'Compare and choose',
+          note: 'I want to weigh things before committing.',
+          values: { stability: 0.74, friction: 0.36, logic: 0.9, autonomy: 0.54 },
+        },
+        {
+          label: 'Commit and adjust',
+          note: 'I want to learn by moving.',
+          values: { stability: 0.58, friction: 0.7, logic: 0.48, autonomy: 0.92 },
+        },
+      ],
+    },
+  ];
+
+  const DEFAULT_CALIBRATION_ANSWERS = CALIBRATION_QUESTIONS.map(() => 0);
+
+  function clamp01(value: number) {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  function calibrationDistance(left: CalibrationVector, right: CalibrationVector) {
+    return Math.sqrt(
+      (left.stability - right.stability) ** 2 +
+      (left.friction - right.friction) ** 2 +
+      (left.logic - right.logic) ** 2 +
+      (left.autonomy - right.autonomy) ** 2,
+    );
+  }
+
+  function averageCalibrationVectors(vectors: CalibrationVector[]): CalibrationVector {
+    if (!vectors.length) {
+      return { stability: 0.5, friction: 0.5, logic: 0.5, autonomy: 0.5 };
+    }
+
+    const totals = vectors.reduce(
+      (acc, vector) => ({
+        stability: acc.stability + vector.stability,
+        friction: acc.friction + vector.friction,
+        logic: acc.logic + vector.logic,
+        autonomy: acc.autonomy + vector.autonomy,
+      }),
+      { stability: 0, friction: 0, logic: 0, autonomy: 0 },
+    );
+
+    return {
+      stability: clamp01(totals.stability / vectors.length),
+      friction: clamp01(totals.friction / vectors.length),
+      logic: clamp01(totals.logic / vectors.length),
+      autonomy: clamp01(totals.autonomy / vectors.length),
+    };
+  }
+
   function openCompose() {
     composeSessionId = selectedSession?.id ?? '';
     composeError = null; composeResult = null;
@@ -1033,11 +1191,57 @@
   let calibTrigger   = 'manual';
   let calibLoading   = false;
   let calibError: string | null = null;
+  let guideOpen = false;
+  let guideAnswers = [...DEFAULT_CALIBRATION_ANSWERS];
+
+  $: currentCalibrationVector = {
+    stability: calibStability,
+    friction: calibFriction,
+    logic: calibLogic,
+    autonomy: calibAutonomy,
+  };
+
+  $: closestCalibrationProfile = CALIBRATION_PROFILES.reduce((best, profile) => {
+    const distance = calibrationDistance(profile.values, currentCalibrationVector);
+    if (!best || distance < best.distance) {
+      return { profile, distance };
+    }
+    return best;
+  }, null as { profile: CalibrationProfile; distance: number } | null);
+
+  $: calibrationPsi = calibStability + calibFriction + calibLogic + calibAutonomy;
+
+  function setCalibration(values: CalibrationVector, trigger = calibTrigger) {
+    calibStability = clamp01(values.stability);
+    calibFriction = clamp01(values.friction);
+    calibLogic = clamp01(values.logic);
+    calibAutonomy = clamp01(values.autonomy);
+    calibTrigger = trigger;
+  }
+
+  function applyCalibrationProfile(profile: CalibrationProfile) {
+    setCalibration(profile.values, profile.trigger);
+  }
+
+  function resetCalibrationGuide() {
+    guideAnswers = [...DEFAULT_CALIBRATION_ANSWERS];
+  }
+
+  function selectGuideAnswer(questionIndex: number, optionIndex: number) {
+    guideAnswers = guideAnswers.map((answer, index) => (index === questionIndex ? optionIndex : answer));
+  }
+
+  function applyCalibrationGuide() {
+    const vectors = CALIBRATION_QUESTIONS.map((question, index) => question.options[guideAnswers[index]].values);
+    setCalibration(averageCalibrationVectors(vectors), 'guided_reflection');
+  }
 
   function openCalibrate() {
     menuOpen = false;
     calibSessionId = selectedSession?.id ?? '';
     calibError = null;
+    guideOpen = false;
+    resetCalibrationGuide();
     calibrateOpen = true;
   }
 
@@ -1153,36 +1357,87 @@
   {#if calibrateOpen}
     <div class="drawer" role="dialog" aria-label="Calibrate session">
       <div class="drawer-header">
-        <span class="drawer-title">calibrate</span>
+        <span class="drawer-title">find your current mode</span>
         <button class="close-btn" on:click={() => (calibrateOpen = false)}>✕</button>
       </div>
-      <input class="drawer-input" type="text" placeholder="session id" bind:value={calibSessionId} />
+      <input class="drawer-input" type="text" placeholder="session name or id" bind:value={calibSessionId} />
+      <section class="calibration-panel">
+        <div class="calibration-topline">
+          <span class="calibration-kicker">current mode</span>
+          <span class="calibration-psi">signal {calibrationPsi.toFixed(2)}</span>
+        </div>
+        {#if closestCalibrationProfile}
+          <p class="calibration-profile-name">{closestCalibrationProfile.profile.label}</p>
+          <p class="calibration-profile-blurb">{closestCalibrationProfile.profile.blurb}</p>
+        {/if}
+      </section>
+      <div class="profile-grid">
+        {#each CALIBRATION_PROFILES as profile}
+          <button
+            class="profile-chip"
+            class:selected={closestCalibrationProfile?.profile.id === profile.id}
+            on:click={() => applyCalibrationProfile(profile)}
+          >
+            <span>{profile.label}</span>
+            <small>{profile.blurb}</small>
+          </button>
+        {/each}
+      </div>
+      <div class="guide-actions">
+        <button class="guide-toggle" class:open={guideOpen} on:click={() => (guideOpen = !guideOpen)}>
+          {guideOpen ? 'hide questions' : 'help me find it'}
+        </button>
+        {#if guideOpen}
+          <button class="guide-apply" on:click={applyCalibrationGuide}>use these answers</button>
+        {/if}
+      </div>
+      {#if guideOpen}
+        <section class="guide-panel">
+          {#each CALIBRATION_QUESTIONS as question, questionIndex}
+            <div class="guide-question">
+              <p class="guide-prompt">{question.prompt}</p>
+              <div class="guide-options">
+                {#each question.options as option, optionIndex}
+                  <button
+                    class="guide-option"
+                    class:selected={guideAnswers[questionIndex] === optionIndex}
+                    on:click={() => selectGuideAnswer(questionIndex, optionIndex)}
+                  >
+                    <span>{option.label}</span>
+                    <small>{option.note}</small>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </section>
+      {/if}
       <div class="slider-row">
-        <span class="slider-label" style="color:{AVEC_HEX.stability}">stability</span>
+        <span class="slider-label" style="color:{AVEC_HEX.stability}">grounding</span>
         <input type="range" min="0" max="1" step="0.01" bind:value={calibStability} class="avec-slider" />
         <span class="slider-val">{calibStability.toFixed(2)}</span>
       </div>
       <div class="slider-row">
-        <span class="slider-label" style="color:{AVEC_HEX.friction}">friction</span>
+        <span class="slider-label" style="color:{AVEC_HEX.friction}">drive</span>
         <input type="range" min="0" max="1" step="0.01" bind:value={calibFriction} class="avec-slider" />
         <span class="slider-val">{calibFriction.toFixed(2)}</span>
       </div>
       <div class="slider-row">
-        <span class="slider-label" style="color:{AVEC_HEX.logic}">logic</span>
+        <span class="slider-label" style="color:{AVEC_HEX.logic}">clarity</span>
         <input type="range" min="0" max="1" step="0.01" bind:value={calibLogic} class="avec-slider" />
         <span class="slider-val">{calibLogic.toFixed(2)}</span>
       </div>
       <div class="slider-row">
-        <span class="slider-label" style="color:{AVEC_HEX.autonomy}">autonomy</span>
+        <span class="slider-label" style="color:{AVEC_HEX.autonomy}">self-trust</span>
         <input type="range" min="0" max="1" step="0.01" bind:value={calibAutonomy} class="avec-slider" />
         <span class="slider-val">{calibAutonomy.toFixed(2)}</span>
       </div>
-      <input class="drawer-input" type="text" placeholder="trigger (e.g. session_start, manual)" bind:value={calibTrigger} />
+      <p class="calibration-source">saved from {calibTrigger.replaceAll('_', ' ')}</p>
       {#if calibError}<p class="drawer-error">{calibError}</p>{/if}
       <div class="drawer-actions">
         <button class="drawer-btn cancel" on:click={() => (calibrateOpen = false)}>cancel</button>
         <button class="drawer-btn submit" on:click={submitCalibrate} disabled={calibLoading}>
-          {calibLoading ? 'calibrating…' : 'calibrate'}
+          {calibLoading ? 'saving…' : 'save mode'}
         </button>
       </div>
     </div>
@@ -1383,9 +1638,13 @@
 
   .drawer {
     position: absolute;
-    bottom: 70px; left: 50%;
+    top: 64px;
+    bottom: 84px;
+    left: 50%;
     transform: translateX(-50%);
-    width: 360px;
+    width: min(456px, calc(100vw - 32px));
+    max-height: calc(100dvh - 148px);
+    overflow-y: auto;
     background: rgba(10, 11, 14, 0.97);
     border: 0.5px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
@@ -1394,6 +1653,8 @@
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     font-family: 'Departure Mono', 'Courier New', monospace;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
 
   .drawer-header {
@@ -1454,9 +1715,208 @@
   .drawer-textarea:focus { border-color: rgba(255, 255, 255, 0.25); }
 
   .slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .slider-label { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; width: 58px; flex-shrink: 0; }
+  .slider-label { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; width: 72px; flex-shrink: 0; }
   .avec-slider  { flex: 1; accent-color: rgba(255,255,255,0.4); height: 2px; }
   .slider-val   { font-size: 10px; color: rgba(255,255,255,0.4); width: 32px; text-align: right; flex-shrink: 0; }
+
+  .calibration-source {
+    margin: 4px 0 0;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.32);
+  }
+
+  .calibration-panel {
+    margin-bottom: 12px;
+    padding: 12px 13px 11px;
+    border-radius: 10px;
+    background:
+      radial-gradient(circle at top left, rgba(170, 145, 82, 0.14), transparent 58%),
+      rgba(255, 255, 255, 0.035);
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .calibration-topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .calibration-kicker,
+  .calibration-psi {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.38);
+  }
+
+  .calibration-profile-name {
+    margin: 0;
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 20px;
+    font-style: italic;
+    color: rgba(255, 249, 235, 0.88);
+  }
+
+  .calibration-profile-blurb {
+    margin: 4px 0 0;
+    font-size: 10px;
+    line-height: 1.5;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.48);
+  }
+
+  .profile-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .profile-chip,
+  .guide-option,
+  .guide-toggle,
+  .guide-apply {
+    font-family: 'Departure Mono', monospace;
+    cursor: pointer;
+  }
+
+  .profile-chip {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    padding: 9px 10px;
+    text-align: left;
+    background: rgba(255, 255, 255, 0.03);
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    border-radius: 9px;
+    color: rgba(255, 255, 255, 0.72);
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+  }
+
+  .profile-chip span {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .profile-chip small {
+    font-size: 9px;
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.42);
+  }
+
+  .profile-chip:hover,
+  .profile-chip.selected {
+    background: rgba(255, 245, 220, 0.07);
+    border-color: rgba(214, 184, 109, 0.34);
+    color: rgba(255, 248, 233, 0.92);
+  }
+
+  .guide-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .guide-toggle,
+  .guide-apply {
+    padding: 7px 10px;
+    border-radius: 999px;
+    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.58);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+  }
+
+  .guide-toggle.open,
+  .guide-toggle:hover,
+  .guide-apply:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.82);
+  }
+
+  .guide-panel {
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .guide-question {
+    padding: 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 0.5px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .guide-prompt {
+    margin: 0 0 8px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: rgba(255, 255, 255, 0.64);
+  }
+
+  .guide-options {
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .guide-option {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 8px 9px;
+    text-align: left;
+    border-radius: 8px;
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.16);
+    color: rgba(255, 255, 255, 0.68);
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+  }
+
+  .guide-option span {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  .guide-option small {
+    font-size: 9px;
+    line-height: 1.35;
+    color: rgba(255, 255, 255, 0.38);
+  }
+
+  .guide-option:hover,
+  .guide-option.selected {
+    background: rgba(255, 245, 220, 0.065);
+    border-color: rgba(214, 184, 109, 0.3);
+    color: rgba(255, 248, 233, 0.9);
+  }
+
+  @media (max-width: 520px) {
+    .drawer {
+      top: 56px;
+      bottom: 74px;
+      width: calc(100vw - 20px);
+      max-height: calc(100dvh - 130px);
+      padding: 16px;
+    }
+
+    .profile-grid,
+    .guide-options {
+      grid-template-columns: 1fr;
+    }
+  }
 
   .drawer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
