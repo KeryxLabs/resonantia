@@ -1,0 +1,13 @@
+{
+  "name": "@resonantia/ui",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./CollapseCard.svelte": "./src/components/CollapseCard.svelte",
+    "./OrbSystem.svelte": "./src/components/OrbSystem.svelte"
+  },
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  }
+}

@@ -12,6 +12,10 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    alias: {
+      '@resonantia/core': './packages/resonantia-core/src',
+      '@resonantia/ui': './packages/resonantia-ui/src',
+    },
   },
 };
 

@@ -1,13 +1,13 @@
-import { invoke } from "@tauri-apps/api/core";
-import type {
-  GraphResponse,
-  NodeDto,
-} from "$lib/types";
+import type { GraphResponse, NodeDto } from "$lib/types";
+import { resonantiaClient } from "$lib/resonantiaClient";
 
 export async function listNodes(limit: number, sessionId?: string): Promise<{ nodes: NodeDto[] }> {
-  return invoke<{ nodes: NodeDto[] }>("list_nodes", { limit, sessionId });
+  const response = await resonantiaClient.listNodes(limit, sessionId);
+  return { nodes: response.nodes };
 }
 
 export async function getGraph(limit: number, sessionId?: string): Promise<GraphResponse> {
-  return invoke<GraphResponse>("get_graph", { limit, sessionId });
+  return resonantiaClient.getGraph(limit, sessionId);
 }
+
+export { resonantiaClient };

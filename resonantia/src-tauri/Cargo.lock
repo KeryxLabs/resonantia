@@ -2058,23 +2058,6 @@ dependencies = [
 
 [[package]]
 name = "geo"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f811f663912a69249fa620dcd2a005db7254529da2d8a0b23942e81f47084501"
-dependencies = [
- "earcutr",
- "float_next_after",
- "geo-types",
- "geographiclib-rs",
- "log",
- "num-traits",
- "robust",
- "rstar 0.12.2",
- "spade",
-]
-
-[[package]]
-name = "geo"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc1a1678e54befc9b4bcab6cd43b8e7f834ae8ea121118b0fd8c42747675b4a"
@@ -2098,6 +2081,7 @@ version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3901269ec6d4f6068d3f09e5f02f995bd076398dcd1dfec407cd230b02d11b"
 dependencies = [
+ "earcutr",
  "float_next_after",
  "geo-types",
  "geographiclib-rs",
@@ -2109,6 +2093,7 @@ dependencies = [
  "rstar 0.12.2",
  "serde",
  "sif-itree",
+ "spade",
 ]
 
 [[package]]
@@ -4961,6 +4946,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "hex",
  "regex",
  "reqwest 0.12.28",
@@ -6005,9 +5991,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "sttp-core-rs"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5d4b0de50e0e31b85c6f3f569a2f512aeadc1aa8747bc58eee73ceb9df5b52f"
+checksum = "0ebf1eda67987ed99e989b3c47019fb98fc84a184c38de9584cb007848e9ef0d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6016,6 +6002,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
@@ -6167,7 +6154,7 @@ dependencies = [
  "chrono",
  "flatbuffers",
  "futures",
- "geo 0.28.0",
+ "geo 0.32.0",
  "prost",
  "prost-types",
  "rust_decimal",

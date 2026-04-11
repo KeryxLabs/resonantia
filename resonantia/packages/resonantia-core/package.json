@@ -1,0 +1,13 @@
+{
+  "name": "@resonantia/core",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./avec": "./src/avec.ts",
+    "./client": "./src/client.ts",
+    "./psych": "./src/psych.ts",
+    "./types": "./src/types.ts"
+  }
+}

@@ -1,17 +1,20 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
-  import { avecColor, avecToRgb, shortLabel, AVEC_HEX, AVEC_COLORS, formatTimestamp } from './avec';
-  import CollapseCard from './CollapseCard.svelte';
+  import { openUrl } from '@tauri-apps/plugin-opener';
+  import { avecColor, avecToRgb, shortLabel, AVEC_HEX, AVEC_COLORS, formatTimestamp } from '@resonantia/core';
+  import CollapseCard from '@resonantia/ui/components/CollapseCard.svelte';
+  import { resonantiaClient } from './resonantiaClient';
   import type {
     AiSummary,
     GraphResponse,
     GraphSessionDto,
     GraphNodeDto,
     NodeDto,
+    StoreContextResponse,
+    SyncNowResponse,
     CollapseCardData,
     Vec2,
-  } from './types';
+  } from '@resonantia/core';
 
   const FONT_MONO    = "'Departure Mono', 'Courier New', monospace";
   const FONT_DISPLAY = "'Fraunces', Georgia, serif";
@@ -244,8 +247,8 @@
       loading = true;
       error   = null;
       const [graphRes, nodesRes] = await Promise.all([
-        invoke<GraphResponse>('get_graph', { limit: 200, sessionId: null }),
-        invoke<{ nodes: NodeDto[] }>('list_nodes', { limit: 400, sessionId: null }),
+        resonantiaClient.getGraph(200),
+        resonantiaClient.listNodes(400),
       ]);
       graph = graphRes;
       hydrateAvecMaps(graphRes, nodesRes.nodes);
@@ -694,9 +697,10 @@
     setTimeout(() => { cardVisible = true; }, 520);
 
     try {
-      const res = await invoke<{ nodes: NodeDto[] }>('list_nodes', {
-        limit: Math.max(selectedSession?.nodeCount ?? 50, 50), sessionId: n.sessionId,
-      });
+      const res = await resonantiaClient.listNodes(
+        Math.max(selectedSession?.nodeCount ?? 50, 50),
+        n.sessionId,
+      );
       const dto = res.nodes.find(node => matchesSelectedNode(n, node)) ?? null;
       if (dto && cardData) cardData = { ...cardData, nodeDto: dto };
     } catch { /* card shows what it has */ }
@@ -742,9 +746,7 @@
     transmuting = true;
     transmuteError = null;
     try {
-      const summary = await invoke<AiSummary | null>('summarize_node', {
-        rawNode: cardData.nodeDto.raw,
-      });
+      const summary = await resonantiaClient.summarizeNode(cardData.nodeDto.raw);
 
       if (!summary) {
         transmuteError = 'The model answered, but the transmutation did not resolve into a readable form.';
@@ -772,6 +774,20 @@
   function handleNavigate(e: CustomEvent<{ sessionId: string }>) {
     const target = graph?.sessions.find(s => s.id === e.detail.sessionId);
     if (target) descendToWave(target);
+  }
+
+  async function openExternalUrl(url: string) {
+    try {
+      await openUrl(url);
+      return;
+    } catch {
+      if (typeof window !== 'undefined') {
+        window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    }
+
+    throw new Error('Unable to open external URL in this runtime.');
   }
 
   // ── Draw helpers ─────────────────────────────────────────────
@@ -1354,7 +1370,7 @@
   // ── Health ───────────────────────────────────────────────────
   let healthy = false;
   async function checkHealth() {
-    try { await invoke('get_health'); healthy = true; }
+    try { await resonantiaClient.getHealth(); healthy = true; }
     catch { healthy = false; }
   }
 
@@ -1367,6 +1383,8 @@
   let settingsSaved = false;
   let ollamaBaseUrl = '';
   let ollamaModel = '';
+  let gatewayBaseUrl = '';
+  let syncAdvancedOpen = false;
 
   async function openSettings() {
     menuOpen = false;
@@ -1376,12 +1394,11 @@
     settingsSaved = false;
 
     try {
-      const config = await invoke<{
-        ollamaBaseUrl: string;
-        ollamaModel: string;
-      }>('get_config');
+      const config = await resonantiaClient.getConfig();
+      gatewayBaseUrl = config.gatewayBaseUrl ?? '';
       ollamaBaseUrl = config.ollamaBaseUrl;
       ollamaModel = config.ollamaModel;
+      syncAdvancedOpen = false;
     } catch (err) {
       settingsError = String(err);
     } finally {
@@ -1395,10 +1412,9 @@
     settingsSaved = false;
 
     try {
-      await invoke('set_ollama_config', {
-        baseUrl: ollamaBaseUrl.trim(),
-        model: ollamaModel.trim(),
-      });
+      await resonantiaClient.setOllamaConfig(ollamaBaseUrl.trim(), ollamaModel.trim());
+      await resonantiaClient.setGatewayBaseUrl(gatewayBaseUrl.trim());
+
       settingsSaved = true;
       await checkHealth();
       await loadGraph();
@@ -1415,7 +1431,83 @@
   let composeSessionId = '';
   let composeLoading  = false;
   let composeError: string | null = null;
-  let composeResult: { psi: number; duplicateSkipped: boolean } | null = null;
+  let composeResult: { psi: number; duplicateSkipped: boolean; status: 'created' | 'updated' | 'duplicate' | 'skipped' } | null = null;
+  let syncPullLoading = false;
+  let syncPullError: string | null = null;
+  let syncPullResult: SyncNowResponse | null = null;
+  let syncButtonAria = 'sync with cloud';
+  let syncVisualState: 'idle' | 'syncing' | 'success' | 'error' = 'idle';
+  let syncDetailHover = false;
+  let syncDetailAutoOpen = false;
+  let syncDetailVisible = false;
+  let syncDetailTitle = 'standing by';
+  let syncDetailSubtitle = '';
+  let syncDetailTimeLabel = 'never';
+  let syncDetailTimestamp: Date | null = null;
+  let syncDetailTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearSyncDetailTimer() {
+    if (syncDetailTimer !== null) {
+      clearTimeout(syncDetailTimer);
+      syncDetailTimer = null;
+    }
+  }
+
+  function scheduleSyncDetailClose(delayMs = 5200) {
+    clearSyncDetailTimer();
+    syncDetailTimer = setTimeout(() => {
+      syncDetailAutoOpen = false;
+      syncDetailTimer = null;
+    }, delayMs);
+  }
+
+  function compactSyncError(message: string) {
+    const clean = message.trim();
+    return clean.length > 92 ? `${clean.slice(0, 89)}...` : clean;
+  }
+
+  function openSyncDetailHover() {
+    syncDetailHover = true;
+    clearSyncDetailTimer();
+  }
+
+  function closeSyncDetailHover() {
+    syncDetailHover = false;
+    if (!syncPullLoading && syncDetailAutoOpen) {
+      scheduleSyncDetailClose(1200);
+    }
+  }
+
+  $: syncDetailVisible = syncDetailHover || syncDetailAutoOpen;
+  $: syncDetailTimeLabel = syncDetailTimestamp
+    ? syncDetailTimestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : 'never';
+
+  $: {
+    if (syncPullLoading) {
+      syncVisualState = 'syncing';
+      syncButtonAria = 'syncing with cloud';
+      syncDetailTitle = 'syncing';
+      syncDetailSubtitle = 'aligning local + cloud';
+    } else if (syncPullError) {
+      syncVisualState = 'error';
+      syncButtonAria = 'sync failed';
+      syncDetailTitle = 'sync issue';
+      syncDetailSubtitle = compactSyncError(syncPullError);
+    } else if (syncPullResult) {
+      syncVisualState = 'success';
+      syncButtonAria = 'sync complete';
+      syncDetailTitle = 'synced';
+      syncDetailSubtitle = syncPullResult.sessionId === 'all'
+        ? 'all waves'
+        : syncPullResult.sessionId;
+    } else {
+      syncVisualState = 'idle';
+      syncButtonAria = 'sync with cloud';
+      syncDetailTitle = 'standing by';
+      syncDetailSubtitle = '';
+    }
+  }
 
   type CalibrationVector = {
     stability: number;
@@ -1610,24 +1702,63 @@
   }
 
   function openCompose() {
-    composeSessionId = selectedSession?.id ?? '';
+    composeSessionId = selectedSession?.label ?? '';
     composeError = null; composeResult = null;
     composeOpen = true;
+  }
+
+  function composeOutcomeLabel(status: 'created' | 'updated' | 'duplicate' | 'skipped', duplicateSkipped: boolean) {
+    if (duplicateSkipped || status === 'duplicate' || status === 'skipped') {
+      return 'already present · duplicate skipped';
+    }
+    if (status === 'updated') {
+      return 'updated';
+    }
+    return 'stored';
+  }
+
+  async function runSyncPull() {
+    syncPullLoading = true;
+    syncPullError = null;
+    syncPullResult = null;
+    syncDetailAutoOpen = true;
+    clearSyncDetailTimer();
+
+    try {
+      syncPullResult = await resonantiaClient.syncNow({ pageSize: 200 });
+      await loadGraph();
+    } catch (err) {
+      syncPullError = String(err);
+    } finally {
+      if (!syncPullResult && !syncPullError) {
+        syncPullError = 'sync did not complete';
+      }
+      syncPullLoading = false;
+      menuOpen = false;
+      syncDetailTimestamp = new Date();
+      scheduleSyncDetailClose(syncPullError ? 7200 : 5200);
+    }
   }
 
   async function submitCompose() {
     if (!composeText.trim()) return;
     composeLoading = true; composeError = null; composeResult = null;
     try {
-      const res = await invoke<{ nodeId: string; psi: number; valid: boolean; validationError: string | null; duplicateSkipped?: boolean }>(
-        'store_context', { request: { node: composeText, sessionId: composeSessionId } },
-      );
+      const res: StoreContextResponse = await resonantiaClient.storeContext({
+        node: composeText,
+        sessionId: composeSessionId,
+      });
       if (!res.valid) {
         composeError = res.validationError ?? 'store rejected by local policy';
         return;
       }
 
-      composeResult = { psi: res.psi, duplicateSkipped: Boolean(res.duplicateSkipped) };
+      const status = res.upsertStatus ?? (res.duplicateSkipped ? 'duplicate' : 'created');
+      composeResult = {
+        psi: res.psi,
+        duplicateSkipped: Boolean(res.duplicateSkipped),
+        status,
+      };
       composeText = '';
       await loadGraph();
     } catch (err) { composeError = String(err); }
@@ -1691,7 +1822,7 @@
 
   function openCalibrate() {
     menuOpen = false;
-    calibSessionId = selectedSession?.id ?? '';
+    calibSessionId = selectedSession?.label ?? '';
     calibError = null;
     guideOpen = false;
     resetCalibrationGuide();
@@ -1701,15 +1832,13 @@
   async function submitCalibrate() {
     calibLoading = true; calibError = null;
     try {
-      await invoke('calibrate_session', {
-        request: {
-          sessionId: calibSessionId,
-          stability: calibStability,
-          friction:  calibFriction,
-          logic:     calibLogic,
-          autonomy:  calibAutonomy,
-          trigger:   calibTrigger,
-        },
+      await resonantiaClient.calibrateSession({
+        sessionId: calibSessionId,
+        stability: calibStability,
+        friction: calibFriction,
+        logic: calibLogic,
+        autonomy: calibAutonomy,
+        trigger: calibTrigger,
       });
       calibrateOpen = false;
     } catch (err) { calibError = String(err); }
@@ -1729,7 +1858,10 @@
     return () => ro.disconnect();
   });
 
-  onDestroy(() => cancelAnimationFrame(raf));
+  onDestroy(() => {
+    cancelAnimationFrame(raf);
+    clearSyncDetailTimer();
+  });
 </script>
 
 <div class="weaver-root" bind:this={container}>
@@ -1754,6 +1886,69 @@
     </div>
     <div class="nav-right">
       <span class="status-dot" class:healthy></span>
+      <div
+        class="sync-cloud-wrap"
+        role="group"
+        aria-label="sync status"
+        on:mouseenter={openSyncDetailHover}
+        on:mouseleave={closeSyncDetailHover}
+      >
+        <button
+          class="sync-cloud-btn"
+          class:syncing={syncVisualState === 'syncing'}
+          class:success={syncVisualState === 'success'}
+          class:error={syncVisualState === 'error'}
+          on:click={runSyncPull}
+          on:focus={openSyncDetailHover}
+          on:blur={closeSyncDetailHover}
+          disabled={syncPullLoading}
+          aria-label={syncButtonAria}
+        >
+          <svg class="sync-cloud-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path class="sync-cloud-shape" d="M7 18h9a4 4 0 0 0 .5-7.97A6 6 0 0 0 6 9.5 4.5 4.5 0 0 0 7 18Z" />
+            <g class="sync-cloud-cycle">
+              <path d="M9.2 12.8a2.9 2.9 0 0 1 4.3-.7" />
+              <path d="M13.6 12h-2v2" />
+              <path d="M14.8 15.2a2.9 2.9 0 0 1-4.3.7" />
+              <path d="M10.4 16h2v-2" />
+            </g>
+          </svg>
+        </button>
+        {#if syncDetailVisible}
+          <div
+            class="sync-detail-popover"
+            class:syncing={syncVisualState === 'syncing'}
+            class:success={syncVisualState === 'success'}
+            class:error={syncVisualState === 'error'}
+            role="status"
+            aria-live="polite"
+          >
+            <div class="sync-detail-head">
+              <i class="sync-detail-dot" aria-hidden="true"></i>
+              <span class="sync-detail-title">{syncDetailTitle}</span>
+              <span class="sync-detail-time">{syncDetailTimeLabel}</span>
+            </div>
+
+            {#if syncPullResult}
+              <div class="sync-detail-row">
+                <span>up</span>
+                <span>↑{syncPullResult.upload.uploaded} · ={syncPullResult.upload.duplicate} · ×{syncPullResult.upload.rejected}</span>
+              </div>
+              <div class="sync-detail-row">
+                <span>down</span>
+                <span>↓{syncPullResult.download.fetched} · +{syncPullResult.download.created} · ~{syncPullResult.download.updated} · ={syncPullResult.download.duplicate}</span>
+              </div>
+              {#if syncDetailSubtitle}
+                <p class="sync-detail-note">{syncDetailSubtitle}</p>
+              {/if}
+            {:else if syncPullError}
+              <p class="sync-detail-error">{syncDetailSubtitle}</p>
+            {:else if syncVisualState === 'syncing'}
+              <p class="sync-detail-note">{syncDetailSubtitle}</p>
+            {/if}
+          </div>
+        {/if}
+      </div>
       <div class="menu-wrap">
         <button
           class="nav-btn menu-btn"
@@ -1781,6 +1976,7 @@
     summary={currentTransmutation}
     transmuting={transmuting}
     transmuteError={transmuteError}
+    openExternalUrl={openExternalUrl}
     on:close={closeCard}
     on:navigate={handleNavigate}
     on:transmute={transmuteCurrentNode}
@@ -1799,7 +1995,7 @@
       {#if composeError}<p class="drawer-error">{composeError}</p>{/if}
       {#if composeResult}
         <p class="drawer-success">
-          {composeResult.duplicateSkipped ? 'already present · duplicate skipped' : 'stored'} · Ψ {composeResult.psi.toFixed(4)}
+          {composeOutcomeLabel(composeResult.status, composeResult.duplicateSkipped)} · Ψ {composeResult.psi.toFixed(4)}
         </p>
       {/if}
       <div class="drawer-actions">
@@ -1913,7 +2109,7 @@
         <span class="drawer-title">settings</span>
         <button class="close-btn" on:click={() => (settingsOpen = false)}>✕</button>
       </div>
-      <p class="settings-intro">Resonantia now runs STTP locally. Configure only your model endpoint for transmutation and summaries.</p>
+      <p class="settings-intro">Resonantia runs local-first. Model settings live here, and cloud sync can be linked once in advanced settings.</p>
 
       <label class="settings-field">
         <span class="settings-label">ollama base url</span>
@@ -1926,6 +2122,30 @@
         <span class="settings-note">Model name Resonantia should call by default</span>
         <input class="drawer-input" type="text" placeholder="llama3.2" bind:value={ollamaModel} disabled={settingsLoading || settingsSaving} />
       </label>
+
+      <button
+        class="settings-advanced-toggle"
+        on:click={() => (syncAdvancedOpen = !syncAdvancedOpen)}
+        disabled={settingsLoading || settingsSaving}
+      >
+        {syncAdvancedOpen ? 'hide advanced sync' : 'advanced sync'}
+      </button>
+
+      {#if syncAdvancedOpen}
+        <div class="settings-advanced-panel">
+          <label class="settings-field">
+            <span class="settings-label">cloud sync path</span>
+            <span class="settings-note">Set this once, then just use Sync from the menu.</span>
+            <input
+              class="drawer-input"
+              type="text"
+              placeholder="https://your-sync-endpoint"
+              bind:value={gatewayBaseUrl}
+              disabled={settingsLoading || settingsSaving}
+            />
+          </label>
+        </div>
+      {/if}
 
       {#if settingsLoading}<p class="drawer-success">loading config…</p>{/if}
       {#if settingsError}<p class="drawer-error">{settingsError}</p>{/if}
@@ -2016,6 +2236,224 @@
   }
   .status-dot.healthy { background: #7aaa7a; }
 
+  .sync-cloud-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .sync-cloud-btn {
+    width: 24px;
+    height: 19px;
+    border-radius: 999px;
+    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, transform 0.2s, box-shadow 0.2s;
+  }
+
+  .sync-cloud-btn:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.038);
+    transform: translateY(-0.5px);
+  }
+
+  .sync-cloud-btn:disabled {
+    cursor: default;
+  }
+
+  .sync-cloud-btn.syncing {
+    border-color: rgba(147, 196, 255, 0.34);
+    background: rgba(94, 148, 216, 0.11);
+    box-shadow: 0 0 10px rgba(90, 150, 221, 0.18);
+  }
+
+  .sync-cloud-btn.success {
+    border-color: rgba(147, 230, 187, 0.3);
+    background: rgba(82, 171, 125, 0.11);
+  }
+
+  .sync-cloud-btn.error {
+    border-color: rgba(255, 128, 125, 0.34);
+    background: rgba(190, 72, 69, 0.11);
+  }
+
+  .sync-cloud-icon {
+    width: 12.5px;
+    height: 12.5px;
+  }
+
+  .sync-cloud-icon path {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.62);
+    stroke-width: 1.42;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: stroke 0.2s;
+  }
+
+  .sync-cloud-btn.syncing .sync-cloud-icon path {
+    stroke: rgba(191, 222, 255, 0.96);
+  }
+
+  .sync-cloud-btn.success .sync-cloud-icon path {
+    stroke: rgba(194, 245, 217, 0.98);
+  }
+
+  .sync-cloud-btn.error .sync-cloud-icon path {
+    stroke: rgba(255, 210, 208, 0.97);
+  }
+
+  .sync-cloud-cycle {
+    transform-origin: center;
+    transform-box: fill-box;
+  }
+
+  .sync-cloud-btn.syncing .sync-cloud-cycle {
+    animation: sync-cloud-spin 0.9s linear infinite;
+  }
+
+  .sync-detail-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: -2px;
+    width: max-content;
+    min-width: 146px;
+    max-width: min(216px, 68vw);
+    padding: 7px 8px;
+    border-radius: 10px;
+    border: 0.5px solid rgba(255, 255, 255, 0.11);
+    background:
+      radial-gradient(circle at 88% 4%, rgba(138, 174, 228, 0.13), transparent 40%),
+      radial-gradient(circle at 8% 92%, rgba(112, 192, 153, 0.09), transparent 44%),
+      rgba(10, 11, 14, 0.915);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    z-index: 28;
+  }
+
+  .sync-detail-popover::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    right: 12px;
+    width: 8px;
+    height: 8px;
+    border-left: 0.5px solid rgba(255, 255, 255, 0.11);
+    border-top: 0.5px solid rgba(255, 255, 255, 0.11);
+    background: rgba(10, 11, 14, 0.915);
+    transform: rotate(45deg);
+  }
+
+  .sync-detail-popover.syncing {
+    border-color: rgba(147, 196, 255, 0.4);
+  }
+
+  .sync-detail-popover.success {
+    border-color: rgba(147, 230, 187, 0.34);
+  }
+
+  .sync-detail-popover.error {
+    border-color: rgba(255, 130, 126, 0.4);
+  }
+
+  .sync-detail-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+
+  .sync-detail-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(195, 205, 223, 0.7);
+    box-shadow: 0 0 10px rgba(133, 163, 214, 0.35);
+  }
+
+  .sync-detail-popover.syncing .sync-detail-dot {
+    background: rgba(186, 222, 255, 0.95);
+    box-shadow: 0 0 12px rgba(117, 171, 237, 0.46);
+  }
+
+  .sync-detail-popover.success .sync-detail-dot {
+    background: rgba(191, 245, 216, 0.96);
+    box-shadow: 0 0 10px rgba(89, 176, 127, 0.42);
+  }
+
+  .sync-detail-popover.error .sync-detail-dot {
+    background: rgba(255, 201, 198, 0.94);
+    box-shadow: 0 0 10px rgba(202, 90, 82, 0.42);
+  }
+
+  .sync-detail-title {
+    font-family: 'Departure Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.08em;
+    text-transform: lowercase;
+    color: rgba(255, 255, 255, 0.74);
+  }
+
+  .sync-detail-time {
+    font-family: 'Departure Mono', monospace;
+    font-size: 7px;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.42);
+  }
+
+  .sync-detail-row {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 6px;
+    margin-bottom: 3px;
+  }
+
+  .sync-detail-row span:first-child {
+    font-family: 'Departure Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .sync-detail-row span:last-child {
+    font-family: 'Departure Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.05em;
+    color: rgba(255, 255, 255, 0.71);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .sync-detail-note,
+  .sync-detail-error {
+    margin: 6px 0 0;
+    font-family: 'Departure Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.05em;
+    line-height: 1.45;
+  }
+
+  .sync-detail-note {
+    color: rgba(255, 255, 255, 0.54);
+  }
+
+  .sync-detail-error {
+    color: rgba(255, 200, 197, 0.92);
+  }
+
+  @keyframes sync-cloud-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
   .nav-btn {
     font-family: 'Departure Mono', monospace;
     font-size: 10px;
@@ -2085,6 +2523,11 @@
     color: rgba(255, 255, 255, 0.84);
     border-color: rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.03);
+  }
+
+  .menu-item:disabled {
+    cursor: default;
+    opacity: 0.5;
   }
 
 
@@ -2218,6 +2661,42 @@
 
   .settings-field .drawer-input {
     margin-bottom: 0;
+  }
+
+  .settings-advanced-toggle {
+    width: 100%;
+    margin: 4px 0 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 0.5px dashed rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.54);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: lowercase;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+  }
+
+  .settings-advanced-toggle:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.26);
+    color: rgba(255, 255, 255, 0.78);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .settings-advanced-toggle:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .settings-advanced-panel {
+    margin-bottom: 10px;
+    padding: 11px;
+    border-radius: 9px;
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
   }
 
   .slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
