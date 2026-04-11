@@ -1,19 +1,85 @@
+use async_trait::async_trait;
 use hex::encode as hex_encode;
 use regex::Regex;
 use reqwest::Client;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
-use std::sync::RwLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use sttp_core_rs::storage::{QueryParams, SurrealDbClient, SurrealDbNodeStore};
+use sttp_core_rs::{
+    CalibrationService, ContextQueryService, InMemoryNodeStore, NodeQuery, NodeStore,
+    NodeStoreInitializer, StoreContextService, SttpNodeParser, TreeSitterValidator,
+};
+use surrealdb::engine::any::{connect as surreal_connect, Any as SurrealAny};
+use surrealdb::Surreal;
 use tauri::Manager;
 
 const DEFAULT_GATEWAY_BASE_URL: &str = "http://127.0.0.1:8080";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL: &str = "gemma3";
 const APP_CONFIG_FILE_NAME: &str = "resonantia-config.json";
+const LOCAL_STTP_DB_FILE_NAME: &str = "sttp-local.db";
+const STORE_DEDUPE_SCAN_LIMIT: usize = 5000;
+
+struct SttpRuntime {
+    store: Arc<dyn NodeStore>,
+    context_query: ContextQueryService,
+    store_context: StoreContextService,
+    calibration: CalibrationService,
+}
+
+impl SttpRuntime {
+    fn new(store: Arc<dyn NodeStore>) -> Self {
+        let validator = Arc::new(TreeSitterValidator::new());
+        Self {
+            store: store.clone(),
+            context_query: ContextQueryService::new(store.clone()),
+            store_context: StoreContextService::new(store.clone(), validator),
+            calibration: CalibrationService::new(store),
+        }
+    }
+}
+
+struct SurrealSdkClient {
+    db: Surreal<SurrealAny>,
+}
+
+impl SurrealSdkClient {
+    async fn connect(endpoint: &str, namespace: &str, database: &str) -> Result<Self, String> {
+        let db = surreal_connect(endpoint)
+            .await
+            .map_err(|err| map_err("failed to connect local SurrealDB", err))?;
+
+        db.use_ns(namespace)
+            .use_db(database)
+            .await
+            .map_err(|err| map_err("failed to initialize SurrealDB namespace/database", err))?;
+
+        Ok(Self { db })
+    }
+}
+
+#[async_trait]
+impl SurrealDbClient for SurrealSdkClient {
+    async fn raw_query(&self, query: &str, parameters: QueryParams) -> anyhow::Result<Vec<Value>> {
+        let mut request = self.db.query(query);
+        for (key, value) in parameters {
+            request = request.bind((key, value));
+        }
+
+        let mut response = request.await?.check()?;
+
+        match response.take::<Vec<Value>>(0) {
+            Ok(rows) => Ok(rows),
+            Err(_) => Ok(Vec::new()),
+        }
+    }
+}
 
 struct AppState {
     http: Client,
@@ -22,10 +88,14 @@ struct AppState {
     ollama_model: RwLock<String>,
     layout_overrides: RwLock<LayoutOverrides>,
     config_path: RwLock<Option<PathBuf>>,
+    sttp_runtime: RwLock<Arc<SttpRuntime>>,
+    sttp_runtime_label: RwLock<String>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
+        let (sttp_runtime, sttp_runtime_label) = build_in_memory_runtime();
+
         Self {
             http: Client::new(),
             gateway_base_url: RwLock::new(DEFAULT_GATEWAY_BASE_URL.to_string()),
@@ -33,6 +103,8 @@ impl Default for AppState {
             ollama_model: RwLock::new(DEFAULT_OLLAMA_MODEL.to_string()),
             layout_overrides: RwLock::new(LayoutOverrides::default()),
             config_path: RwLock::new(None),
+            sttp_runtime: RwLock::new(sttp_runtime),
+            sttp_runtime_label: RwLock::new(sttp_runtime_label),
         }
     }
 }
@@ -84,6 +156,8 @@ struct StoreContextResponse {
     psi: f32,
     valid: bool,
     validation_error: Option<String>,
+    #[serde(default)]
+    duplicate_skipped: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -185,6 +259,8 @@ struct NodeDto {
     kappa: f32,
     psi: f32,
     #[serde(default)]
+    sync_key: String,
+    #[serde(default)]
     synthetic_id: String,
 }
 
@@ -230,24 +306,6 @@ struct OllamaChatResponse {
     message: Option<OllamaMessage>,
 }
 
-fn with_query(base_url: &str, path: &str, limit: i32, session_id: Option<String>) -> Result<String, String> {
-    let mut url = Url::parse(&format!("{base_url}{path}"))
-        .map_err(|err| map_err("failed to build request url", err))?;
-
-    {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("limit", &limit.to_string());
-        if let Some(session_id) = session_id {
-            let trimmed = session_id.trim();
-            if !trimmed.is_empty() {
-                query.append_pair("sessionId", trimmed);
-            }
-        }
-    }
-
-    Ok(url.to_string())
-}
-
 fn join_url(base_url: &str, path: &str) -> Result<String, String> {
     let normalized_base = if base_url.ends_with('/') {
         base_url.to_string()
@@ -265,6 +323,313 @@ fn map_err(prefix: &str, err: impl std::fmt::Display) -> String {
     format!("{prefix}: {err}")
 }
 
+fn build_in_memory_runtime() -> (Arc<SttpRuntime>, String) {
+    let store = Arc::new(InMemoryNodeStore::new());
+    let initializer: Arc<dyn NodeStoreInitializer> = store.clone();
+
+    if let Err(err) = tauri::async_runtime::block_on(async { initializer.initialize_async().await }) {
+        eprintln!("in-memory STTP store initialize warning: {err}");
+    }
+
+    let store_trait: Arc<dyn NodeStore> = store;
+    (
+        Arc::new(SttpRuntime::new(store_trait)),
+        "sttp-core-rs (in-memory fallback)".to_string(),
+    )
+}
+
+fn build_surreal_runtime(config_dir: &Path) -> Result<(Arc<SttpRuntime>, String), String> {
+    let db_path = config_dir.join(LOCAL_STTP_DB_FILE_NAME);
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| map_err("failed to create local db directory", err))?;
+    }
+
+    let endpoint = format!("surrealkv://{}", db_path.to_string_lossy());
+    let namespace = "resonantia";
+    let database = "sttp-local";
+
+    let client = tauri::async_runtime::block_on(async {
+        SurrealSdkClient::connect(&endpoint, namespace, database).await
+    })?;
+
+    let store = Arc::new(SurrealDbNodeStore::new(Arc::new(client)));
+    let initializer: Arc<dyn NodeStoreInitializer> = store.clone();
+    tauri::async_runtime::block_on(async { initializer.initialize_async().await })
+        .map_err(|err| map_err("failed to initialize local STTP schema", err))?;
+
+    let store_trait: Arc<dyn NodeStore> = store;
+
+    Ok((
+        Arc::new(SttpRuntime::new(store_trait)),
+        format!("sttp-core-rs (surrealdb local: {endpoint})"),
+    ))
+}
+
+fn ensure_sttp_runtime_initialized(state: &AppState, config_dir: &Path) {
+    match build_surreal_runtime(config_dir) {
+        Ok((runtime, label)) => {
+            if let Ok(mut guard) = state.sttp_runtime.write() {
+                *guard = runtime;
+            }
+            if let Ok(mut guard) = state.sttp_runtime_label.write() {
+                *guard = label;
+            }
+        }
+        Err(err) => {
+            eprintln!("local surreal runtime init warning: {err}");
+            let (fallback_runtime, fallback_label) = build_in_memory_runtime();
+            if let Ok(mut guard) = state.sttp_runtime.write() {
+                *guard = fallback_runtime;
+            }
+            if let Ok(mut guard) = state.sttp_runtime_label.write() {
+                *guard = fallback_label;
+            }
+        }
+    }
+}
+
+fn sttp_runtime_handle(state: &AppState) -> Result<Arc<SttpRuntime>, String> {
+    state
+        .sttp_runtime
+        .read()
+        .map_err(|err| map_err("failed to read STTP runtime", err))
+        .map(|guard| guard.clone())
+}
+
+fn sttp_transport_label(state: &AppState) -> String {
+    state
+        .sttp_runtime_label
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| "sttp-core-rs (runtime unavailable)".to_string())
+}
+
+fn to_ui_avec(value: sttp_core_rs::AvecState) -> AvecState {
+    AvecState {
+        stability: value.stability,
+        friction: value.friction,
+        logic: value.logic,
+        autonomy: value.autonomy,
+        psi: value.psi(),
+    }
+}
+
+fn to_ui_node(node: sttp_core_rs::SttpNode) -> NodeDto {
+    let timestamp = node.timestamp.to_rfc3339();
+    let sync_key = node_sync_key_from_sttp(&node);
+    let synthetic_id = node_fingerprint(
+        &node.session_id,
+        &timestamp,
+        &node.tier,
+        node.parent_node_id.as_deref(),
+        node.psi,
+    );
+
+    NodeDto {
+        raw: node.raw,
+        session_id: node.session_id,
+        tier: node.tier,
+        timestamp,
+        compression_depth: node.compression_depth,
+        parent_node_id: node.parent_node_id,
+        user_avec: to_ui_avec(node.user_avec),
+        model_avec: to_ui_avec(node.model_avec),
+        compression_avec: node.compression_avec.map(to_ui_avec),
+        rho: node.rho,
+        kappa: node.kappa,
+        psi: node.psi,
+        sync_key,
+        synthetic_id,
+    }
+}
+
+fn session_graph_id(session_id: &str) -> String {
+    if session_id.starts_with("s:") {
+        session_id.to_string()
+    } else {
+        format!("s:{session_id}")
+    }
+}
+
+fn node_label(node: &NodeDto) -> String {
+    let date = node.timestamp.chars().take(10).collect::<String>();
+    format!("{} · {}", node.tier, date)
+}
+
+fn build_graph_response(nodes_response: &ListNodesResponse) -> GraphResponse {
+    let mut sessions: HashMap<String, GraphSessionDto> = HashMap::new();
+    let mut nodes = Vec::with_capacity(nodes_response.nodes.len());
+
+    for node in &nodes_response.nodes {
+        let graph_session_id = session_graph_id(&node.session_id);
+        let entry = sessions
+            .entry(graph_session_id.clone())
+            .or_insert_with(|| GraphSessionDto {
+                id: graph_session_id.clone(),
+                label: node.session_id.clone(),
+                node_count: 0,
+                avg_psi: 0.0,
+                last_modified: node.timestamp.clone(),
+                size: 0,
+            });
+
+        entry.node_count += 1;
+        entry.avg_psi += node.psi;
+        if node.timestamp > entry.last_modified {
+            entry.last_modified = node.timestamp.clone();
+        }
+
+        nodes.push(GraphNodeDto {
+            id: node.synthetic_id.clone(),
+            session_id: node.session_id.clone(),
+            label: node_label(node),
+            tier: node.tier.clone(),
+            timestamp: node.timestamp.clone(),
+            psi: node.psi,
+            parent_node_id: node.parent_node_id.clone(),
+            size: ((node.psi * 6.0).round() as i32).clamp(4, 24),
+            synthetic_id: node.synthetic_id.clone(),
+        });
+    }
+
+    let mut sessions = sessions
+        .into_values()
+        .map(|mut session| {
+            if session.node_count > 0 {
+                session.avg_psi /= session.node_count as f32;
+            }
+            session.size = (session.node_count * 2).clamp(8, 42);
+            session
+        })
+        .collect::<Vec<_>>();
+
+    sessions.sort_by(|left, right| right.last_modified.cmp(&left.last_modified));
+
+    let mut edges = Vec::new();
+
+    for index in 0..sessions.len() {
+        if index + 1 < sessions.len() {
+            let source = sessions[index].id.clone();
+            let target = sessions[index + 1].id.clone();
+            edges.push(GraphEdgeDto {
+                id: format!("temporal:{source}->{target}"),
+                source,
+                target,
+                kind: "temporal".to_string(),
+            });
+        }
+    }
+
+    for left in 0..sessions.len() {
+        for right in (left + 1)..sessions.len() {
+            if edges.len() >= 120 {
+                break;
+            }
+
+            let diff = (sessions[left].avg_psi - sessions[right].avg_psi).abs();
+            if diff <= 0.45 {
+                let source = sessions[left].id.clone();
+                let target = sessions[right].id.clone();
+                edges.push(GraphEdgeDto {
+                    id: format!("resonance:{source}->{target}"),
+                    source,
+                    target,
+                    kind: "resonance".to_string(),
+                });
+            }
+        }
+    }
+
+    GraphResponse {
+        retrieved: nodes_response.retrieved,
+        sessions,
+        nodes,
+        edges,
+    }
+}
+
+fn drift_label(drift: sttp_core_rs::DriftClassification) -> String {
+    match drift {
+        sttp_core_rs::DriftClassification::Intentional => "Intentional".to_string(),
+        sttp_core_rs::DriftClassification::Uncontrolled => "Uncontrolled".to_string(),
+    }
+}
+
+fn quantize(value: f32) -> String {
+    format!("{value:.6}")
+}
+
+fn node_sync_key_from_sttp(node: &sttp_core_rs::SttpNode) -> String {
+    let compression = node.compression_avec.unwrap_or(node.model_avec);
+    let canonical = format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        node.session_id.trim(),
+        node.tier.trim(),
+        node.timestamp.to_rfc3339(),
+        node.compression_depth,
+        node.parent_node_id.as_deref().unwrap_or("").trim(),
+        quantize(node.psi),
+        quantize(node.rho),
+        quantize(node.kappa),
+        quantize(node.user_avec.stability),
+        quantize(node.user_avec.friction),
+        quantize(node.user_avec.logic),
+        quantize(node.user_avec.autonomy),
+        quantize(node.model_avec.stability),
+        quantize(node.model_avec.friction),
+        quantize(node.model_avec.logic),
+        quantize(node.model_avec.autonomy),
+        quantize(compression.stability),
+        quantize(compression.friction),
+        quantize(compression.logic),
+        quantize(compression.autonomy),
+        quantize(node.user_avec.psi()),
+        quantize(node.model_avec.psi()),
+        quantize(compression.psi()),
+        quantize(compression.psi() - node.model_avec.psi()),
+    );
+
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    hex_encode(hasher.finalize())
+}
+
+async fn find_duplicate_node_by_sync_key(
+    runtime: &SttpRuntime,
+    raw_node: &str,
+    requested_session_id: &str,
+) -> Result<Option<sttp_core_rs::SttpNode>, String> {
+    let parser = SttpNodeParser::new();
+    let parse = parser.try_parse(raw_node, requested_session_id);
+    if !parse.success {
+        return Ok(None);
+    }
+
+    let Some(candidate) = parse.node else {
+        return Ok(None);
+    };
+
+    let candidate_key = node_sync_key_from_sttp(&candidate);
+    let existing_nodes = runtime
+        .store
+        .query_nodes_async(NodeQuery {
+            limit: STORE_DEDUPE_SCAN_LIMIT,
+            session_id: Some(candidate.session_id.clone()),
+            from_utc: None,
+            to_utc: None,
+        })
+        .await
+        .map_err(|err| map_err("duplicate scan query failed", err))?;
+
+    for existing in existing_nodes {
+        if node_sync_key_from_sttp(&existing) == candidate_key {
+            return Ok(Some(existing));
+        }
+    }
+
+    Ok(None)
+}
+
 fn node_fingerprint(session_id: &str, timestamp: &str, tier: &str, parent_node_id: Option<&str>, psi: f32) -> String {
     let canonical = format!(
         "{}|{}|{}|{}|{:.6}",
@@ -277,30 +642,6 @@ fn node_fingerprint(session_id: &str, timestamp: &str, tier: &str, parent_node_i
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     hex_encode(hasher.finalize())
-}
-
-fn stamp_graph_node_ids(response: &mut GraphResponse) {
-    for node in &mut response.nodes {
-        node.synthetic_id = node_fingerprint(
-            &node.session_id,
-            &node.timestamp,
-            &node.tier,
-            node.parent_node_id.as_deref(),
-            node.psi,
-        );
-    }
-}
-
-fn stamp_list_node_ids(response: &mut ListNodesResponse) {
-    for node in &mut response.nodes {
-        node.synthetic_id = node_fingerprint(
-            &node.session_id,
-            &node.timestamp,
-            &node.tier,
-            node.parent_node_id.as_deref(),
-            node.psi,
-        );
-    }
 }
 
 fn read_current_config(state: &AppState) -> Result<AppConfig, String> {
@@ -697,24 +1038,18 @@ fn set_ollama_config(
 
 #[tauri::command]
 async fn get_health(state: tauri::State<'_, AppState>) -> Result<HealthResponse, String> {
-    let base_url = state
-        .gateway_base_url
-        .read()
-        .map_err(|err| map_err("failed to read gateway url", err))?
-        .clone();
+    let runtime = sttp_runtime_handle(&state)?;
 
-    let url = format!("{base_url}/health");
-    state
-        .http
-        .get(url)
-        .send()
+    runtime
+        .context_query
+        .list_nodes_async(1, None)
         .await
-        .map_err(|err| map_err("health request failed", err))?
-        .error_for_status()
-        .map_err(|err| map_err("health response status failed", err))?
-        .json::<HealthResponse>()
-        .await
-        .map_err(|err| map_err("health response parse failed", err))
+        .map_err(|err| map_err("local STTP health check failed", err))?;
+
+    Ok(HealthResponse {
+        status: "ok".to_string(),
+        transport: sttp_transport_label(&state),
+    })
 }
 
 #[tauri::command]
@@ -723,28 +1058,23 @@ async fn list_nodes(
     limit: i32,
     session_id: Option<String>,
 ) -> Result<ListNodesResponse, String> {
-    let base_url = state
-        .gateway_base_url
-        .read()
-        .map_err(|err| map_err("failed to read gateway url", err))?
-        .clone();
+    let runtime = sttp_runtime_handle(&state)?;
+    let capped_limit = limit.clamp(1, 400) as usize;
+    let session_filter = session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
-    let url = with_query(&base_url, "/api/v1/nodes", limit, session_id)?;
-
-    let mut response = state
-        .http
-        .get(url)
-        .send()
+    let listed = runtime
+        .context_query
+        .list_nodes_async(capped_limit, session_filter)
         .await
-        .map_err(|err| map_err("list nodes request failed", err))?
-        .error_for_status()
-        .map_err(|err| map_err("list nodes response status failed", err))?
-        .json::<ListNodesResponse>()
-        .await
-        .map_err(|err| map_err("list nodes response parse failed", err))?;
+        .map_err(|err| map_err("local list nodes failed", err))?;
 
-    stamp_list_node_ids(&mut response);
-    Ok(response)
+    Ok(ListNodesResponse {
+        nodes: listed.nodes.into_iter().map(to_ui_node).collect(),
+        retrieved: listed.retrieved as i32,
+    })
 }
 
 #[tauri::command]
@@ -753,28 +1083,8 @@ async fn get_graph(
     limit: i32,
     session_id: Option<String>,
 ) -> Result<GraphResponse, String> {
-    let base_url = state
-        .gateway_base_url
-        .read()
-        .map_err(|err| map_err("failed to read gateway url", err))?
-        .clone();
-
-    let url = with_query(&base_url, "/api/v1/graph", limit, session_id)?;
-
-    let mut response = state
-        .http
-        .get(url)
-        .send()
-        .await
-        .map_err(|err| map_err("graph request failed", err))?
-        .error_for_status()
-        .map_err(|err| map_err("graph response status failed", err))?
-        .json::<GraphResponse>()
-        .await
-        .map_err(|err| map_err("graph response parse failed", err))?;
-
-    stamp_graph_node_ids(&mut response);
-    Ok(response)
+    let listed = list_nodes(state, limit, session_id).await?;
+    Ok(build_graph_response(&listed))
 }
 
 #[tauri::command]
@@ -782,26 +1092,49 @@ async fn store_context(
     state: tauri::State<'_, AppState>,
     request: StoreContextRequest,
 ) -> Result<StoreContextResponse, String> {
-    let base_url = state
-        .gateway_base_url
-        .read()
-        .map_err(|err| map_err("failed to read gateway url", err))?
-        .clone();
+    let runtime = sttp_runtime_handle(&state)?;
+    let session_id = request.session_id.trim();
+    let effective_session_id = if session_id.is_empty() {
+        "resonantia-local"
+    } else {
+        session_id
+    };
 
-    let url = format!("{base_url}/api/v1/store");
+    match find_duplicate_node_by_sync_key(&runtime, &request.node, effective_session_id).await {
+        Ok(Some(existing)) => {
+            let existing_timestamp = existing.timestamp.to_rfc3339();
+            let existing_synthetic_id = node_fingerprint(
+                &existing.session_id,
+                &existing_timestamp,
+                &existing.tier,
+                existing.parent_node_id.as_deref(),
+                existing.psi,
+            );
 
-    state
-        .http
-        .post(url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| map_err("store request failed", err))?
-        .error_for_status()
-        .map_err(|err| map_err("store response status failed", err))?
-        .json::<StoreContextResponse>()
-        .await
-        .map_err(|err| map_err("store response parse failed", err))
+            return Ok(StoreContextResponse {
+                node_id: format!("dup:{existing_synthetic_id}"),
+                psi: existing.psi,
+                valid: true,
+                validation_error: None,
+                duplicate_skipped: true,
+            });
+        }
+        Ok(None) => {}
+        Err(err) => eprintln!("duplicate check warning: {err}"),
+    }
+
+    let result = runtime
+        .store_context
+        .store_async(&request.node, effective_session_id)
+        .await;
+
+    Ok(StoreContextResponse {
+        node_id: result.node_id,
+        psi: result.psi,
+        valid: result.valid,
+        validation_error: result.validation_error,
+        duplicate_skipped: false,
+    })
 }
 
 #[tauri::command]
@@ -809,26 +1142,35 @@ async fn calibrate_session(
     state: tauri::State<'_, AppState>,
     request: CalibrateSessionRequest,
 ) -> Result<CalibrateSessionResponse, String> {
-    let base_url = state
-        .gateway_base_url
-        .read()
-        .map_err(|err| map_err("failed to read gateway url", err))?
-        .clone();
+    let runtime = sttp_runtime_handle(&state)?;
+    let session_id = request.session_id.trim();
+    let effective_session_id = if session_id.is_empty() {
+        "resonantia-local"
+    } else {
+        session_id
+    };
 
-    let url = format!("{base_url}/api/v1/calibrate");
+    let result = runtime
+        .calibration
+        .calibrate_async(
+            effective_session_id,
+            request.stability,
+            request.friction,
+            request.logic,
+            request.autonomy,
+            &request.trigger,
+        )
+        .await
+        .map_err(|err| map_err("local calibration failed", err))?;
 
-    state
-        .http
-        .post(url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| map_err("calibrate request failed", err))?
-        .error_for_status()
-        .map_err(|err| map_err("calibrate response status failed", err))?
-        .json::<CalibrateSessionResponse>()
-        .await
-        .map_err(|err| map_err("calibrate response parse failed", err))
+    Ok(CalibrateSessionResponse {
+        previous_avec: to_ui_avec(result.previous_avec),
+        delta: result.delta,
+        drift_classification: drift_label(result.drift_classification),
+        trigger: result.trigger,
+        trigger_history: result.trigger_history,
+        is_first_calibration: result.is_first_calibration,
+    })
 }
 
 #[tauri::command]
@@ -948,6 +1290,9 @@ pub fn run() {
             if let Err(err) = load_persisted_config(&state) {
                 eprintln!("config restore warning: {err}");
             }
+
+            ensure_sttp_runtime_initialized(&state, &config_dir);
+            eprintln!("sttp runtime ready: {}", sttp_transport_label(&state));
 
             Ok(())
         })

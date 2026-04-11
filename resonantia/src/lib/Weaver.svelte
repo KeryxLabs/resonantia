@@ -1365,7 +1365,6 @@
   let settingsSaving = false;
   let settingsError: string | null = null;
   let settingsSaved = false;
-  let gatewayBaseUrl = '';
   let ollamaBaseUrl = '';
   let ollamaModel = '';
 
@@ -1378,11 +1377,9 @@
 
     try {
       const config = await invoke<{
-        gatewayBaseUrl: string;
         ollamaBaseUrl: string;
         ollamaModel: string;
       }>('get_config');
-      gatewayBaseUrl = config.gatewayBaseUrl;
       ollamaBaseUrl = config.ollamaBaseUrl;
       ollamaModel = config.ollamaModel;
     } catch (err) {
@@ -1398,7 +1395,6 @@
     settingsSaved = false;
 
     try {
-      await invoke('set_gateway_base_url', { baseUrl: gatewayBaseUrl.trim() });
       await invoke('set_ollama_config', {
         baseUrl: ollamaBaseUrl.trim(),
         model: ollamaModel.trim(),
@@ -1419,7 +1415,7 @@
   let composeSessionId = '';
   let composeLoading  = false;
   let composeError: string | null = null;
-  let composeResult: { psi: number } | null = null;
+  let composeResult: { psi: number; duplicateSkipped: boolean } | null = null;
 
   type CalibrationVector = {
     stability: number;
@@ -1623,10 +1619,15 @@
     if (!composeText.trim()) return;
     composeLoading = true; composeError = null; composeResult = null;
     try {
-      const res = await invoke<{ nodeId: string; psi: number; valid: boolean; validationError: string | null }>(
+      const res = await invoke<{ nodeId: string; psi: number; valid: boolean; validationError: string | null; duplicateSkipped?: boolean }>(
         'store_context', { request: { node: composeText, sessionId: composeSessionId } },
       );
-      composeResult = { psi: res.psi };
+      if (!res.valid) {
+        composeError = res.validationError ?? 'store rejected by local policy';
+        return;
+      }
+
+      composeResult = { psi: res.psi, duplicateSkipped: Boolean(res.duplicateSkipped) };
       composeText = '';
       await loadGraph();
     } catch (err) { composeError = String(err); }
@@ -1796,7 +1797,11 @@
       <input class="drawer-input" type="text" placeholder="session id" bind:value={composeSessionId} />
       <textarea class="drawer-textarea" placeholder="what happened…" bind:value={composeText} rows="6"></textarea>
       {#if composeError}<p class="drawer-error">{composeError}</p>{/if}
-      {#if composeResult}<p class="drawer-success">stored · Ψ {composeResult.psi.toFixed(4)}</p>{/if}
+      {#if composeResult}
+        <p class="drawer-success">
+          {composeResult.duplicateSkipped ? 'already present · duplicate skipped' : 'stored'} · Ψ {composeResult.psi.toFixed(4)}
+        </p>
+      {/if}
       <div class="drawer-actions">
         <button class="drawer-btn cancel" on:click={() => (composeOpen = false)}>cancel</button>
         <button class="drawer-btn submit" on:click={submitCompose} disabled={composeLoading}>
@@ -1908,13 +1913,7 @@
         <span class="drawer-title">settings</span>
         <button class="close-btn" on:click={() => (settingsOpen = false)}>✕</button>
       </div>
-      <p class="settings-intro">Set the endpoints Resonantia uses for graph retrieval, storage, and model work.</p>
-
-      <label class="settings-field">
-        <span class="settings-label">gateway base url</span>
-        <span class="settings-note">STTP graph, nodes, calibration, and storage</span>
-        <input class="drawer-input" type="text" placeholder="http://10.12.0.11:8090" bind:value={gatewayBaseUrl} disabled={settingsLoading || settingsSaving} />
-      </label>
+      <p class="settings-intro">Resonantia now runs STTP locally. Configure only your model endpoint for transmutation and summaries.</p>
 
       <label class="settings-field">
         <span class="settings-label">ollama base url</span>

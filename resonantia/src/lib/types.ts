@@ -54,6 +54,7 @@ export interface NodeDto {
   rho: number;
   kappa: number;
   psi: number;
+  syncKey: string;
   syntheticId: string;
 }
 
@@ -62,6 +63,7 @@ export interface StoreContextResponse {
   psi: number;
   valid: boolean;
   validationError: string | null;
+  duplicateSkipped?: boolean;
 }
 
 export interface AiSummary {
