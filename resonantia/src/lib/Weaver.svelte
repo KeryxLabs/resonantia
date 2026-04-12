@@ -1319,7 +1319,7 @@
 
   // ── Pointer events ─────────────────────────────────────────────
   function onPointerDown(e: MouseEvent) {
-    if (level !== 0) return;
+    if (telescopeOpen || level !== 0) return;
     dragging    = true;
     didDrag     = false;
     dragStart   = { x: e.clientX, y: e.clientY };
@@ -1337,6 +1337,7 @@
 
   function onPointerUp(e: MouseEvent) {
     dragging = false;
+    if (telescopeOpen) return;
     if (didDrag) return;
 
     const { x: sx, y: sy } = canvasXY(e);
@@ -1450,6 +1451,33 @@
   let syncDetailTimestamp: Date | null = null;
   let syncDetailTimer: ReturnType<typeof setTimeout> | null = null;
 
+  type TelescopeRange = {
+    label: string;
+    days: number;
+  };
+
+  const TELESCOPE_RANGES: TelescopeRange[] = [
+    { label: 'last 7 days', days: 7 },
+    { label: 'last 2 weeks', days: 14 },
+    { label: 'last month', days: 30 },
+    { label: 'last 3 months', days: 90 },
+    { label: 'all time', days: Number.MAX_SAFE_INTEGER },
+  ];
+
+  const TELESCOPE_DIAL_MAX = 95;
+  const TELESCOPE_DIAL_STEP = 20;
+  const TELESCOPE_TIMELINE_LIMIT = 10;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  let telescopeOpen = false;
+  let telescopeDialPct = 0;
+  let telescopeDragY: number | null = null;
+  let telescopeDragBasePct = 0;
+  let telescopeRangeIndex = 0;
+  let telescopeRangeLabel = TELESCOPE_RANGES[0].label;
+  let telescopeDialOffsetY = 0;
+  let telescopeTimelineSessions: GraphSessionDto[] = [];
+
   function clearSyncDetailTimer() {
     if (syncDetailTimer !== null) {
       clearTimeout(syncDetailTimer);
@@ -1512,6 +1540,162 @@
       syncDetailSubtitle = '';
     }
   }
+
+  function telescopeRangeIndexForDial(dialPct: number) {
+    return Math.max(0, Math.min(TELESCOPE_RANGES.length - 1, Math.floor(dialPct / TELESCOPE_DIAL_STEP)));
+  }
+
+  function snapTelescopeDialPct(dialPct: number) {
+    const snapped = Math.round(dialPct / TELESCOPE_DIAL_STEP) * TELESCOPE_DIAL_STEP;
+    return Math.max(0, Math.min(TELESCOPE_DIAL_STEP * (TELESCOPE_RANGES.length - 1), snapped));
+  }
+
+  function daysAgoFromTimestamp(timestamp: string) {
+    const parsed = Date.parse(timestamp);
+    if (!Number.isFinite(parsed)) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+
+    const diffMs = Math.max(0, Date.now() - parsed);
+    return Math.floor(diffMs / DAY_MS);
+  }
+
+  function listTelescopeSessions(sessions: GraphSessionDto[], maxDays: number) {
+    return sessions
+      .filter((session) => daysAgoFromTimestamp(session.lastModified) <= maxDays)
+      .sort((left, right) => right.lastModified.localeCompare(left.lastModified));
+  }
+
+  function telescopeSessionDateLabel(timestamp: string) {
+    const ageDays = daysAgoFromTimestamp(timestamp);
+    if (ageDays === 0) return 'today';
+    if (ageDays === 1) return 'yesterday';
+
+    const parsed = Date.parse(timestamp);
+    if (!Number.isFinite(parsed)) {
+      return 'unknown';
+    }
+
+    return new Date(parsed).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  function telescopeSessionMeta(session: GraphSessionDto) {
+    return `${session.nodeCount} nodes · Ψ ${session.avgPsi.toFixed(2)}`;
+  }
+
+  function telescopeSessionColor(session: GraphSessionDto, alpha = 0.9) {
+    return fieldAvecColor(sessionAvec(session), alpha);
+  }
+
+  function openTelescope() {
+    closeTransientUi();
+    syncDetailAutoOpen = false;
+    syncDetailHover = false;
+    telescopeOpen = true;
+  }
+
+  function closeTelescope() {
+    telescopeOpen = false;
+    telescopeDragY = null;
+  }
+
+  function selectTelescopeSession(session: GraphSessionDto) {
+    closeTelescope();
+    descendToWave(session);
+  }
+
+  function beginTelescopeDial(clientY: number) {
+    telescopeDragY = clientY;
+    telescopeDragBasePct = telescopeDialPct;
+  }
+
+  function updateTelescopeDial(clientY: number) {
+    if (telescopeDragY === null) {
+      return;
+    }
+
+    const delta = telescopeDragY - clientY;
+    telescopeDialPct = Math.max(0, Math.min(TELESCOPE_DIAL_MAX, telescopeDragBasePct + delta * 0.55));
+  }
+
+  function endTelescopeDial() {
+    if (telescopeDragY === null) {
+      return;
+    }
+
+    telescopeDragY = null;
+    telescopeDialPct = snapTelescopeDialPct(telescopeDialPct);
+  }
+
+  function handleTelescopeDialMouseDown(event: MouseEvent) {
+    event.preventDefault();
+    beginTelescopeDial(event.clientY);
+  }
+
+  function handleTelescopeDialTouchStart(event: TouchEvent) {
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+
+    event.preventDefault();
+    beginTelescopeDial(touch.clientY);
+  }
+
+  function handleTelescopeDialMouseMove(event: MouseEvent) {
+    updateTelescopeDial(event.clientY);
+  }
+
+  function handleTelescopeDialTouchMove(event: TouchEvent) {
+    if (telescopeDragY === null) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+
+    event.preventDefault();
+    updateTelescopeDial(touch.clientY);
+  }
+
+  function handleTelescopeDialKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      telescopeDialPct = Math.min(TELESCOPE_DIAL_MAX, telescopeDialPct + 8);
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      telescopeDialPct = Math.max(0, telescopeDialPct - 8);
+      return;
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      telescopeDialPct = 0;
+      return;
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      telescopeDialPct = TELESCOPE_DIAL_STEP * (TELESCOPE_RANGES.length - 1);
+    }
+  }
+
+  function handleTelescopeEyeKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      closeTelescope();
+    }
+  }
+
+  $: telescopeRangeIndex = telescopeRangeIndexForDial(telescopeDialPct);
+  $: telescopeRangeLabel = TELESCOPE_RANGES[telescopeRangeIndex].label;
+  $: telescopeDialOffsetY = -4 + (telescopeDialPct / TELESCOPE_DIAL_MAX) * 14;
+  $: telescopeTimelineSessions = listTelescopeSessions(graph?.sessions ?? [], TELESCOPE_RANGES[telescopeRangeIndex].days);
 
   type CalibrationVector = {
     stability: number;
@@ -1857,9 +2041,21 @@
     draw();
     requestAnimationFrame(() => { resize(); loadGraph(); });
     checkHealth();
+
+    window.addEventListener('mousemove', handleTelescopeDialMouseMove);
+    window.addEventListener('mouseup', endTelescopeDial);
+    window.addEventListener('touchmove', handleTelescopeDialTouchMove, { passive: false });
+    window.addEventListener('touchend', endTelescopeDial);
+
     const ro = new ResizeObserver(resize);
     ro.observe(container);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('mousemove', handleTelescopeDialMouseMove);
+      window.removeEventListener('mouseup', endTelescopeDial);
+      window.removeEventListener('touchmove', handleTelescopeDialTouchMove);
+      window.removeEventListener('touchend', endTelescopeDial);
+    };
   });
 
   onDestroy(() => {
@@ -1876,9 +2072,10 @@
     on:mouseup={onPointerUp}
     on:mouseleave={() => (dragging = false)}
     class:grabbing={dragging}
+    class:telescope-open={telescopeOpen}
   ></canvas>
 
-  <nav class="navbar">
+  <nav class="navbar" class:faded={telescopeOpen}>
     <div class="nav-left">
       {#if level > 0}
         <button class="back-btn" on:click={level === 2 ? surfaceToWave : surfaceToConstellation}>
@@ -1986,7 +2183,117 @@
     on:transmute={transmuteCurrentNode}
   />
 
-  <button class="compose-btn" on:click={openCompose}>+ compose</button>
+  <button class="compose-btn" class:faded={telescopeOpen} on:click={openCompose}>+ compose</button>
+
+  <div class="telescope-shell" aria-label="timeline telescope">
+    <button
+      class="telescope-icon"
+      class:hidden={telescopeOpen}
+      on:click={openTelescope}
+      aria-label="open timeline telescope"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(190,170,255,0.85)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="4"></circle>
+        <line x1="19" y1="19" x2="14.65" y2="14.65"></line>
+        <line x1="11" y1="7" x2="11" y2="5"></line>
+        <line x1="11" y1="17" x2="11" y2="19"></line>
+        <line x1="7" y1="11" x2="5" y2="11"></line>
+        <line x1="15" y1="11" x2="17" y2="11"></line>
+      </svg>
+    </button>
+
+    <div class="telescope-instrument" class:open={telescopeOpen}>
+      <div class="telescope-scope-wrap">
+        <svg width="52" height="270" viewBox="0 0 52 270" fill="none" aria-hidden="true">
+          <ellipse cx="26" cy="14" rx="15" ry="4" fill="#141025" stroke="rgba(160,140,255,0.4)" stroke-width="0.8"></ellipse>
+          <ellipse cx="26" cy="14" rx="10" ry="2.5" fill="#0a0818" stroke="rgba(160,140,255,0.5)" stroke-width="0.5"></ellipse>
+          <ellipse cx="24.5" cy="13.2" rx="3.5" ry="1" fill="rgba(200,185,255,0.12)"></ellipse>
+
+          <path d="M11 14 L15 118 L37 118 L41 14 Z" fill="#0f0d1e" stroke="rgba(120,100,190,0.2)" stroke-width="0.5"></path>
+          <path d="M11 14 L15 118" stroke="rgba(170,150,255,0.1)" stroke-width="1.2"></path>
+          <path d="M41 14 L37 118" stroke="rgba(60,45,110,0.2)" stroke-width="0.8"></path>
+
+          <g
+            class="telescope-dial"
+            style={`transform: translateY(${telescopeDialOffsetY.toFixed(2)}px);`}
+            on:mousedown={handleTelescopeDialMouseDown}
+            on:touchstart={handleTelescopeDialTouchStart}
+            on:keydown={handleTelescopeDialKeydown}
+            role="button"
+            tabindex="0"
+            aria-label="adjust timeline zoom"
+          >
+            <path d="M13 96 L15 118 L37 118 L39 96 Z" fill="#1c1840" stroke="rgba(155,135,255,0.4)" stroke-width="0.5"></path>
+            <line x1="13" y1="96" x2="39" y2="96" stroke="rgba(160,140,255,0.3)" stroke-width="0.7"></line>
+            <line x1="15" y1="118" x2="37" y2="118" stroke="rgba(160,140,255,0.3)" stroke-width="0.7"></line>
+            <line x1="23" y1="97" x2="22.5" y2="117" stroke="rgba(180,160,255,0.2)" stroke-width="0.6"></line>
+            <line x1="26" y1="97" x2="26" y2="117" stroke="rgba(190,170,255,0.4)" stroke-width="0.9"></line>
+            <line x1="29" y1="97" x2="29.5" y2="117" stroke="rgba(180,160,255,0.2)" stroke-width="0.6"></line>
+            <circle cx="26" cy="107" r="2" fill="rgba(210,190,255,0.75)"></circle>
+          </g>
+
+          <path d="M15 118 L17 178 L35 178 L37 118 Z" fill="#0c0a1a" stroke="rgba(100,85,165,0.18)" stroke-width="0.5"></path>
+
+          <path d="M16 175 L17 190 L35 190 L36 175 Z" fill="#181535" stroke="rgba(140,120,215,0.3)" stroke-width="0.5"></path>
+          <line x1="16" y1="175" x2="36" y2="175" stroke="rgba(145,125,215,0.25)" stroke-width="0.7"></line>
+          <line x1="17" y1="190" x2="35" y2="190" stroke="rgba(145,125,215,0.25)" stroke-width="0.7"></line>
+
+          <path d="M17 190 L19 232 L33 232 L35 190 Z" fill="#090716" stroke="rgba(100,85,155,0.18)" stroke-width="0.5"></path>
+          <path d="M18 230 L15 244 L37 244 L34 230 Z" fill="#13102a" stroke="rgba(130,110,200,0.3)" stroke-width="0.5"></path>
+          <ellipse cx="26" cy="232" rx="9" ry="2" fill="#181535" stroke="rgba(140,120,205,0.3)" stroke-width="0.5"></ellipse>
+          <ellipse cx="26" cy="244" rx="11" ry="2.5" fill="#1c193a" stroke="rgba(150,130,215,0.35)" stroke-width="0.5"></ellipse>
+
+          <line x1="26" y1="246" x2="16" y2="256" stroke="rgba(100,85,155,0.3)" stroke-width="0.8"></line>
+          <line x1="26" y1="246" x2="36" y2="256" stroke="rgba(100,85,155,0.3)" stroke-width="0.8"></line>
+          <ellipse cx="16" cy="256" rx="2.5" ry="0.8" fill="rgba(100,85,155,0.25)"></ellipse>
+          <ellipse cx="36" cy="256" rx="2.5" ry="0.8" fill="rgba(100,85,155,0.25)"></ellipse>
+
+          <ellipse
+            cx="26"
+            cy="244"
+            rx="13"
+            ry="4"
+            fill="transparent"
+            class="telescope-eye-btn"
+            on:click={closeTelescope}
+            on:keydown={handleTelescopeEyeKeydown}
+            role="button"
+            tabindex="0"
+            aria-label="close timeline telescope"
+          ></ellipse>
+        </svg>
+      </div>
+
+      <div class="telescope-timeline-layer">
+        <span class="telescope-range-badge">{telescopeRangeLabel}</span>
+        <button class="telescope-close-btn" on:click={closeTelescope}>close ×</button>
+        <div class="telescope-line"></div>
+        <div class="telescope-sessions">
+          {#if telescopeTimelineSessions.length === 0}
+            <p class="telescope-empty">no sessions in this range</p>
+          {:else}
+            {#each telescopeTimelineSessions as session}
+              <button
+                class="telescope-item"
+                on:click={() => selectTelescopeSession(session)}
+                title={session.label}
+              >
+                <i
+                  class="telescope-dot"
+                  style={`background:${telescopeSessionColor(session)}; box-shadow: 0 0 7px ${telescopeSessionColor(session, 0.4)};`}
+                ></i>
+                <span class="telescope-copy">
+                  <span class="telescope-title">{shortLabel(session.label, 4)}</span>
+                  <span class="telescope-meta">{telescopeSessionMeta(session)}</span>
+                </span>
+                <span class="telescope-date">{telescopeSessionDateLabel(session.lastModified)}</span>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      </div>
+    </div>
+  </div>
 
   {#if composeOpen}
     <div class="drawer" role="dialog" aria-label="Compose context">
@@ -2185,6 +2492,7 @@
     display: block;
   }
   canvas.grabbing { cursor: grabbing; }
+  canvas.telescope-open { pointer-events: none; }
 
   .navbar {
     position: absolute;
@@ -2196,6 +2504,13 @@
     padding: 0 22px;
     background: linear-gradient(to bottom, rgba(10,11,14,0.88) 0%, transparent 100%);
     z-index: 10;
+    pointer-events: none;
+    transition: opacity 0.24s ease, transform 0.24s ease;
+  }
+
+  .navbar.faded {
+    opacity: 0;
+    transform: translateY(-6px);
     pointer-events: none;
   }
 
@@ -2556,6 +2871,210 @@
     color: #fff;
     border-color: rgba(255, 255, 255, 0.28);
     background: rgba(20, 23, 32, 0.95);
+  }
+
+  .compose-btn.faded {
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+  }
+
+  .telescope-shell {
+    position: absolute;
+    left: 20px;
+    bottom: 20px;
+    z-index: 16;
+    pointer-events: none;
+  }
+
+  .telescope-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
+    background: rgba(14, 10, 30, 0.9);
+    border: 0.5px solid rgba(160, 140, 255, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    pointer-events: all;
+    transition: border-color 0.2s, background 0.2s, opacity 0.16s;
+    padding: 0;
+  }
+
+  .telescope-icon:hover {
+    border-color: rgba(180, 160, 255, 0.62);
+    background: rgba(62, 42, 122, 0.64);
+  }
+
+  .telescope-icon.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .telescope-instrument {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(0.86) translateY(20px);
+    transform-origin: left bottom;
+    transition: opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1), transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .telescope-instrument.open {
+    opacity: 1;
+    pointer-events: all;
+    transform: scale(1) translateY(0);
+  }
+
+  .telescope-scope-wrap {
+    position: relative;
+  }
+
+  .telescope-dial {
+    cursor: ns-resize;
+    transition: transform 0.08s linear;
+  }
+
+  .telescope-eye-btn {
+    cursor: pointer;
+  }
+
+  .telescope-timeline-layer {
+    position: relative;
+    width: 196px;
+    height: 274px;
+    padding-top: 6px;
+    padding-left: 2px;
+  }
+
+  .telescope-range-badge {
+    position: absolute;
+    top: -18px;
+    left: 2px;
+    font-size: 10px;
+    color: rgba(140, 125, 210, 0.48);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .telescope-close-btn {
+    position: absolute;
+    top: -20px;
+    right: 0;
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    color: rgba(140, 125, 210, 0.35);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: color 0.15s;
+    padding: 0;
+  }
+
+  .telescope-close-btn:hover {
+    color: rgba(200, 180, 255, 0.72);
+  }
+
+  .telescope-line {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    bottom: 8px;
+    width: 1px;
+    background: linear-gradient(to bottom, rgba(150, 130, 255, 0), rgba(150, 130, 255, 0.26) 18%, rgba(150, 130, 255, 0.26) 82%, rgba(150, 130, 255, 0));
+  }
+
+  .telescope-sessions {
+    position: absolute;
+    inset: 0;
+    padding: 8px 0 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    justify-content: flex-start;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 4px;
+  }
+
+  .telescope-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 5px 0 5px 2px;
+    text-align: left;
+    transition: opacity 0.14s;
+  }
+
+  .telescope-item:hover .telescope-title {
+    color: rgba(226, 214, 255, 0.95);
+  }
+
+  .telescope-item:hover .telescope-dot {
+    transform: scale(1.35);
+  }
+
+  .telescope-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: transform 0.14s;
+  }
+
+  .telescope-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 1px;
+  }
+
+  .telescope-title {
+    font-size: 11px;
+    color: rgba(180, 165, 255, 0.74);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.15s;
+  }
+
+  .telescope-meta {
+    font-size: 9px;
+    color: rgba(155, 144, 214, 0.5);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .telescope-date {
+    font-size: 10px;
+    color: rgba(120, 110, 180, 0.42);
+    white-space: nowrap;
+    padding-right: 2px;
+  }
+
+  .telescope-empty {
+    margin: auto 0;
+    padding-left: 17px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: rgba(170, 156, 224, 0.44);
+    text-transform: lowercase;
   }
 
   .drawer {
@@ -2923,6 +3442,23 @@
   }
 
   @media (max-width: 520px) {
+    .telescope-shell {
+      left: 12px;
+      bottom: 12px;
+    }
+
+    .telescope-instrument {
+      transform-origin: left bottom;
+    }
+
+    .telescope-instrument.open {
+      transform: scale(0.94) translateY(0);
+    }
+
+    .telescope-timeline-layer {
+      width: 176px;
+    }
+
     .drawer {
       top: 56px;
       bottom: 74px;

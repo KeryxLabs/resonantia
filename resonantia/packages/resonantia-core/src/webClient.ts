@@ -28,6 +28,8 @@ const MEM_FALLBACK_ENDPOINT = "mem://";
 const DB_NAMESPACE = "resonantia";
 const DB_NAME = "local";
 const APP_CONFIG_STORAGE_KEY = "resonantia:app-config:v1";
+const NODE_CACHE_STORAGE_KEY = "resonantia:nodes-cache:v1";
+const NODE_CACHE_LIMIT = 1200;
 
 const DEFAULT_GATEWAY_BASE_URL = "";
 const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
@@ -316,6 +318,46 @@ function writeConfigToLocalStorage(config: AppConfig): void {
     localStorage.setItem(APP_CONFIG_STORAGE_KEY, JSON.stringify(config));
   } catch {
     // Ignore storage quota and privacy-mode failures.
+  }
+}
+
+function readNodesCacheFromLocalStorage(): NodeDto[] {
+  if (typeof localStorage === "undefined") {
+    return [];
+  }
+
+  const raw = localStorage.getItem(NODE_CACHE_STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const values = Array.isArray(parsed) ? parsed : [];
+    return values
+      .map(toNodeDto)
+      .filter((node): node is NodeDto => node !== null)
+      .map(normalizeNode)
+      .sort(byTimestampDesc);
+  } catch {
+    return [];
+  }
+}
+
+function writeNodesCacheToLocalStorage(nodes: NodeDto[]): void {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+
+  const normalized = nodes
+    .map(normalizeNode)
+    .sort(byTimestampDesc)
+    .slice(0, NODE_CACHE_LIMIT);
+
+  try {
+    localStorage.setItem(NODE_CACHE_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // Ignore quota/privacy failures and keep runtime behavior unchanged.
   }
 }
 
@@ -1148,6 +1190,7 @@ export function createWebResonantiaClient(): ResonantiaClient {
       }
 
       if (localNodes.length > 0) {
+        writeNodesCacheToLocalStorage(localNodes);
         return {
           nodes: localNodes.slice(0, cappedLimit),
           retrieved: Math.min(localNodes.length, cappedLimit),
@@ -1162,11 +1205,23 @@ export function createWebResonantiaClient(): ResonantiaClient {
           .sort(byTimestampDesc)
           .slice(0, cappedLimit);
 
+        writeNodesCacheToLocalStorage(remoteNodes);
         await hydrateLocalCacheFromRemote(db, remoteNodes);
 
         return {
           nodes: remoteNodes,
           retrieved: remoteNodes.length,
+        };
+      }
+
+      const cachedNodes = readNodesCacheFromLocalStorage()
+        .filter((node) => !sessionFilter || node.sessionId === sessionFilter)
+        .slice(0, cappedLimit);
+
+      if (cachedNodes.length > 0) {
+        return {
+          nodes: cachedNodes,
+          retrieved: cachedNodes.length,
         };
       }
 

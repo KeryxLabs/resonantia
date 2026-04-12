@@ -34,12 +34,34 @@ function withClient<T>(handler: (client: ResonantiaClient) => Promise<T>): Promi
   return clientPromise.then(handler);
 }
 
+async function syncAfterStoreIfConfigured(client: ResonantiaClient, sessionId: string): Promise<void> {
+  try {
+    const config = await client.getConfig();
+    if (!config.gatewayBaseUrl.trim()) {
+      return;
+    }
+
+    const trimmedSessionId = sessionId.trim();
+    await client.syncNow(trimmedSessionId ? { sessionId: trimmedSessionId } : {});
+  } catch (error) {
+    // Store remains local-first; network sync failures should not block saves.
+    console.warn("post-store sync failed", error);
+  }
+}
+
 export const resonantiaClient: ResonantiaClient = {
   getHealth: () => withClient((client) => client.getHealth()),
   getConfig: () => withClient((client) => client.getConfig()),
   listNodes: (limit, sessionId) => withClient((client) => client.listNodes(limit, sessionId)),
   getGraph: (limit, sessionId) => withClient((client) => client.getGraph(limit, sessionId)),
-  storeContext: (input) => withClient((client) => client.storeContext(input)),
+  storeContext: (input) => withClient(async (client) => {
+    const response = await client.storeContext(input);
+    if (response.valid) {
+      await syncAfterStoreIfConfigured(client, input.sessionId);
+    }
+
+    return response;
+  }),
   syncPull: (request) => withClient((client) => client.syncPull(request)),
   syncNow: (request) => withClient((client) => client.syncNow(request)),
   calibrateSession: (input) => withClient((client) => client.calibrateSession(input)),
