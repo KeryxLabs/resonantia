@@ -24,7 +24,7 @@ use surrealdb::Surreal;
 const DEFAULT_GATEWAY_BASE_URL: &str = "";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL: &str = "gemma3";
-const TRANSMUTE_PREAMBLE: &str = include_str!("../../../../preamble.md");
+const TRANSMUTE_PREAMBLE: &str = include_str!("../../../preamble.md");
 const COMPOSE_CHAT_PREAMBLE: &str = "This is a chat conversation with Resonantia. Silently track two AVEC states throughout the chat: one for the user and one for yourself. Each AVEC state includes stability, friction, logic, autonomy, and psi. Do not mention AVEC tracking, scores, or internal analysis to the user unless they explicitly ask. Use this internal tracking so later conversation encoding accurately represents what happened.";
 const COMPOSE_ENCODE_PREAMBLE: &str = r#"⏣ Spatio-Temporal Transfer Protocol (STTP): an experimental typed IR for persistent stateful communication between language models and humans — a problem the field has not yet solved.
 Envelope carries session metadata. Content carries confidence-weighted compressed payload. Metrics carry validation signals.

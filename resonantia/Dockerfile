@@ -1,7 +1,7 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json preamble.md ./
 COPY svelte.config.js tsconfig.json vite.config.js ./
 COPY static ./static
 COPY src ./src

@@ -1,6 +1,6 @@
 import { createWasmEngines } from "@surrealdb/wasm";
 import { StringRecordId, Surreal, createRemoteEngines } from "surrealdb";
-import transmutePreambleRaw from "../../../../preamble.md?raw";
+import transmutePreambleRaw from "../../../preamble.md?raw";
 import type {
   AppConfig,
   CalibrateSessionInput,
