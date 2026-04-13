@@ -191,7 +191,7 @@ export default defineConfig(async () => {
       host: host || "127.0.0.1",
       allowedHosts,
       fs: {
-        allow: [".", "./packages"],
+        allow: [".", "./packages", ".."],
       },
       hmr: host
         ? {

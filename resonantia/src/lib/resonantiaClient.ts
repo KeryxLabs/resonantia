@@ -52,6 +52,7 @@ async function syncAfterStoreIfConfigured(client: ResonantiaClient, sessionId: s
 export const resonantiaClient: ResonantiaClient = {
   getHealth: () => withClient((client) => client.getHealth()),
   getConfig: () => withClient((client) => client.getConfig()),
+  getComposeEncodePreamble: () => withClient((client) => client.getComposeEncodePreamble()),
   listNodes: (limit, sessionId) => withClient((client) => client.listNodes(limit, sessionId)),
   getGraph: (limit, sessionId) => withClient((client) => client.getGraph(limit, sessionId)),
   storeContext: (input) => withClient(async (client) => {
@@ -65,6 +66,8 @@ export const resonantiaClient: ResonantiaClient = {
   syncPull: (request) => withClient((client) => client.syncPull(request)),
   syncNow: (request) => withClient((client) => client.syncNow(request)),
   calibrateSession: (input) => withClient((client) => client.calibrateSession(input)),
+  chatCompose: (request) => withClient((client) => client.chatCompose(request)),
+  encodeCompose: (request) => withClient((client) => client.encodeCompose(request)),
   summarizeNode: (rawNode) => withClient((client) => client.summarizeNode(rawNode)),
   setOllamaConfig: (baseUrl, model) => withClient((client) => client.setOllamaConfig(baseUrl, model)),
   setGatewayBaseUrl: (baseUrl) => withClient((client) => client.setGatewayBaseUrl(baseUrl)),

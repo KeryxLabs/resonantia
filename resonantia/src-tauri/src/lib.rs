@@ -109,6 +109,27 @@ async fn summarize_node(
 }
 
 #[tauri::command]
+async fn chat_compose(
+    state: tauri::State<'_, core::AppState>,
+    request: core::ComposeChatRequest,
+) -> Result<Option<String>, String> {
+    core::chat_compose(state.inner(), request).await
+}
+
+#[tauri::command]
+fn get_compose_encode_preamble() -> String {
+    core::get_compose_encode_preamble()
+}
+
+#[tauri::command]
+async fn encode_compose(
+    state: tauri::State<'_, core::AppState>,
+    request: core::EncodeComposeRequest,
+) -> Result<String, String> {
+    core::encode_compose(state.inner(), request).await
+}
+
+#[tauri::command]
 fn unwind_node(node: core::NodeDto) -> core::UnwindResult {
     core::unwind_node(node)
 }
@@ -144,6 +165,9 @@ pub fn run() {
             sync_now,
             calibrate_session,
             summarize_node,
+            chat_compose,
+            get_compose_encode_preamble,
+            encode_compose,
             unwind_node,
         ])
         .run(tauri::generate_context!())

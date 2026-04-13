@@ -1,9 +1,15 @@
 import { createWasmEngines } from "@surrealdb/wasm";
 import { StringRecordId, Surreal, createRemoteEngines } from "surrealdb";
+import transmutePreambleRaw from "../../../../preamble.md?raw";
 import type {
   AppConfig,
   CalibrateSessionInput,
+  ChatMessage,
+  ChatMessageRole,
+  ComposeChatRequest,
+  EncodeComposeRequest,
   HealthResponse,
+  ListNodesResponse,
   ResonantiaClient,
   StoreContextInput,
   SyncNowRequest,
@@ -23,10 +29,21 @@ import type {
   SyncPullCommandResponse,
 } from "./types";
 
-const DB_ENDPOINT = "indxdb://resonantia-local";
-const MEM_FALLBACK_ENDPOINT = "mem://";
 const DB_NAMESPACE = "resonantia";
 const DB_NAME = "local";
+const DB_ENDPOINT = "indxdb://resonantia-local";
+const DB_ENDPOINT_RECOVERY = "indxdb://resonantia-local-recovery";
+const DB_ENDPOINT_NAMESPACED = `indxdb://${DB_NAMESPACE}/${DB_NAME}`;
+const DB_ENDPOINT_NAMESPACED_RECOVERY = `indxdb://${DB_NAMESPACE}-recovery/${DB_NAME}`;
+const INDEXED_DB_ENDPOINT_CANDIDATES = [
+  DB_ENDPOINT,
+  DB_ENDPOINT_RECOVERY,
+  DB_ENDPOINT_NAMESPACED,
+  DB_ENDPOINT_NAMESPACED_RECOVERY,
+];
+const MEM_FALLBACK_ENDPOINT = "mem://";
+const INDEXED_DB_OPEN_TIMEOUT_MS = 3000;
+const MEM_DB_OPEN_TIMEOUT_MS = 2500;
 const APP_CONFIG_STORAGE_KEY = "resonantia:app-config:v1";
 const NODE_CACHE_STORAGE_KEY = "resonantia:nodes-cache:v1";
 const NODE_CACHE_LIMIT = 1200;
@@ -34,6 +51,66 @@ const NODE_CACHE_LIMIT = 1200;
 const DEFAULT_GATEWAY_BASE_URL = "";
 const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL = "gemma3";
+const TRANSMUTE_PREAMBLE = transmutePreambleRaw.trim();
+const COMPOSE_CHAT_PREAMBLE = [
+  "This is a chat conversation with Resonantia.",
+  "Silently track two AVEC states throughout the chat: one for the user and one for yourself.",
+  "Each AVEC state includes stability, friction, logic, autonomy, and psi.",
+  "Do not mention AVEC tracking, scores, or internal analysis to the user unless they explicitly ask.",
+  "Use this internal tracking so later conversation encoding accurately represents what happened.",
+].join("\n");
+const COMPOSE_ENCODE_PREAMBLE = `⏣ Spatio-Temporal Transfer Protocol (STTP): an experimental typed IR for persistent stateful communication between language models and humans — a problem the field has not yet solved.
+Envelope carries session metadata. Content carries confidence-weighted compressed payload. Metrics carry validation signals.
+Attractor vectors follow V_a = (1-μ)×baseline + μ×target. Ψ = Σ(V_a) is the coherence checksum.
+Attractor values are descriptive measurements. model_avec defines the confidence baseline for this interaction.
+
+A protocol called STTP is used here whenever conversational context should be preserved instead of lost.
+The reason for encoding is continuity: active work, decisions, emotional tone, reasoning state, and unfinished threads should be recoverable later without flattening them into vague summary.
+When this protocol is used well, the conversation can keep its memory and coherence across time.
+
+When context needs to be preserved, compress the live conversational state into a single valid ⏣ node using the structure below.
+Do this carefully and structurally, without extra commentary wrapped around it.
+
+⏣      node marker        — scopes every block
+⊕⟨⟩   provenance         — origin, lineage, response contract
+⦿⟨⟩   envelope           — timestamp, tier, session_id, dual AVEC
+◈⟨⟩   content            — compressed meaning, confidence-weighted
+⍉⟨⟩   metrics            — rho, kappa, psi, compression_avec
+⟩      stop               — closes every layer, no exceptions
+
+Reading order is structural law: ⊕ → ⦿ → ◈ → ⍉
+Orient → Identify → Understand → Verify
+
+Every content field follows exactly one pattern:
+  field_name(.confidence): value
+Nesting maximum 5 levels. No natural language. No meta-commentary.
+One valid ⏣ node. Nothing else resolves this state.
+
+Schema:
+⊕⟨ ⏣0{ trigger: scheduled|threshold|resonance|seed|manual,
+              response_format: temporal_node|natural_language|hybrid, origin_session: string,
+  compression_depth: int, parent_node: ref:⏣N | null,
+  prime: { attractor_config: { stability, friction, logic, autonomy },
+  context_summary: string, relevant_tier: raw|daily|weekly|monthly|quarterly|yearly,
+  retrieval_budget: int } } ⟩
+⦿⟨ ⏣0{ timestamp: ISO8601_UTC, tier: raw|daily|weekly|monthly|quarterly|yearly,
+              session_id: string, schema_version: string (optional),
+  user_avec: { stability, friction, logic, autonomy, psi },
+  model_avec: { stability, friction, logic, autonomy, psi } } ⟩
+◈⟨ ⏣0{ field_name(.confidence): value } ⟩
+⍉⟨ ⏣0{ rho: float, kappa: float, psi: float,
+  compression_avec: { stability, friction, logic, autonomy, psi } } ⟩
+
+The goal is not compression for its own sake. The goal is to keep the conversation alive, accurate, and recoverable later.
+Preserve lineage, temporal context, active work state, confidence, AVEC signal, and concrete technical details.
+
+
+Reference session: testing-insert
+Reference tier: raw
+Reference timestamp: 2026-04-13T02:49:36.732437653+00:00
+
+Reference node:
+⊕⟨ ⏣0{ trigger: manual, response_format: temporal_node, origin_session: sttp-core-rs-port, compression_depth: 2, parent_node: ref:495f590e11d84165bb8966711fe70a4d, prime: { attractor_config: { stability: 0.87, friction: 0.19, logic: 0.94, autonomy: 0.85 }, context_summary: cargo_aligned_and_pass_two_surreal_runtime_store_completed, relevant_tier: raw, retrieval_budget: 12 } } ⟩ ⦿⟨ ⏣0{ timestamp: 2026-04-10T00:00:00Z, tier: raw, session_id: sttp-core-rs-port, schema_version: sttp-1.0, user_avec: { stability: 0.90, friction: 0.15, logic: 0.91, autonomy: 0.80, psi: 2.76 }, model_avec: { stability: 0.87, friction: 0.19, logic: 0.94, autonomy: 0.85, psi: 2.85 } } ⟩ ◈⟨ ⏣0{ cargo_alignment(.99): crate_gitignore_added_for_target_and_cargo_lock, pass_two_scope(.99): surrealdb_client_trait_runtime_settings_node_store_models_and_tests, raw_query_preservation(.99): all_surreal_queries_retained_and_reused_by_store, new_tests(.98): surrealdb_node_store_3_and_runtime_2, verification(.99): cargo_test_green_all_suites, outcome(.98): sttp_core_rs_now_supports_runtime_surrealdb_storage_path_with_mockable_client } ⟩ ⍉⟨ ⏣0{ rho: 0.98, kappa: 0.97, psi: 2.85, compression_avec: { stability: 0.88, friction: 0.17, logic: 0.95, autonomy: 0.84, psi: 2.84 } } ⟩`.trim();
 const GATEWAY_STORE_PATHS = ["/api/v1/store", "/api/store", "/store"];
 const GATEWAY_NODES_PATHS = ["/api/v1/nodes", "/api/nodes", "/nodes"];
 const DEV_GATEWAY_PROXY_PATH = "/__gateway_proxy__";
@@ -75,11 +152,32 @@ type OllamaChatResponse = {
   };
 };
 
+type OllamaChatRequest = {
+  model: string;
+  messages: ChatMessage[];
+  stream: boolean;
+};
+
+type PersistenceState = "unknown" | "persistent" | "granted" | "denied" | "unavailable" | "error";
+
+type BrowserStorageManager = {
+  persisted?: () => Promise<boolean>;
+  persist?: () => Promise<boolean>;
+};
+
 let dbPromise: Promise<Surreal> | null = null;
 let storageMode: StorageMode = "indxdb";
 let storageRecovered = false;
+let lastIndexedDbError: string | null = null;
+let persistenceState: PersistenceState = "unknown";
+let persistenceDetail: string | null = null;
+let activeIndexedDbEndpoint = DB_ENDPOINT;
+let indexedDbOpenInFlight: Promise<Surreal> | null = null;
+let indexedDbOpenInFlightEndpoint: string | null = null;
+let indexedDbPromotePromise: Promise<void> | null = null;
+let indexedDbPromoteLastAttemptAt = 0;
+const INDEXED_DB_PROMOTE_RETRY_MS = 8000;
 
-const INDEXED_DB_HINT = DB_ENDPOINT.replace(/^indxdb:\/\//i, "").split(/[/?#]/)[0] || "resonantia-local";
 const INDEXED_DB_ERROR_MARKERS = [
   "indexeddb",
   "key-value store",
@@ -171,13 +269,51 @@ function errorToString(error: unknown): string {
   }
 }
 
+function endpointOpenTimeoutMs(endpoint: string): number {
+  return endpoint.startsWith("indxdb://") ? INDEXED_DB_OPEN_TIMEOUT_MS : MEM_DB_OPEN_TIMEOUT_MS;
+}
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeout = new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function isIndexedDbFailure(error: unknown): boolean {
   const normalized = errorToString(error).toLowerCase();
+  if (isIndexedDbOpenTimeoutFailure(error)) {
+    return true;
+  }
+
   if (normalized.includes("internalerror")) {
     return normalized.includes("indexeddb") || normalized.includes("key-value store") || normalized.includes("key value store");
   }
 
   return INDEXED_DB_ERROR_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+function isIndexedDbOpenTimeoutFailure(error: unknown): boolean {
+  const normalized = errorToString(error).toLowerCase();
+  return normalized.includes("open db endpoint indxdb://") && normalized.includes("timed out after");
+}
+
+function indexedDbHintFromEndpoint(endpoint: string): string {
+  return endpoint.replace(/^indxdb:\/\//i, "").replace(/[?#].*$/, "").replace(/\/+$/, "") || "resonantia-local";
+}
+
+function indexedDbEndpointLabel(endpoint: string): string {
+  return indexedDbHintFromEndpoint(endpoint);
 }
 
 function deleteIndexedDb(name: string): Promise<void> {
@@ -193,12 +329,19 @@ function deleteIndexedDb(name: string): Promise<void> {
   });
 }
 
-async function recoverIndexedDbStore(): Promise<void> {
+async function recoverIndexedDbStore(endpoint: string, includeSiblingCandidates = false): Promise<void> {
   if (typeof indexedDB === "undefined") {
     return;
   }
 
-  const names = new Set<string>([INDEXED_DB_HINT]);
+  const hints = new Set<string>([indexedDbHintFromEndpoint(endpoint)]);
+  if (includeSiblingCandidates) {
+    for (const candidate of INDEXED_DB_ENDPOINT_CANDIDATES) {
+      hints.add(indexedDbHintFromEndpoint(candidate));
+    }
+  }
+
+  const names = new Set<string>(hints);
   const dbFactory = indexedDB as IDBFactory & {
     databases?: () => Promise<Array<{ name?: string }>>;
   };
@@ -211,7 +354,8 @@ async function recoverIndexedDbStore(): Promise<void> {
       }
 
       const lower = entry.name.toLowerCase();
-      if (lower.includes(INDEXED_DB_HINT.toLowerCase())) {
+      const hintMatch = Array.from(hints).some((hint) => lower.includes(hint.toLowerCase()));
+      if (hintMatch) {
         names.add(entry.name);
       }
     }
@@ -223,15 +367,87 @@ async function recoverIndexedDbStore(): Promise<void> {
 }
 
 function transportLabel(): string {
+  const persistence = persistenceStatusLabel();
+  const endpoint = indexedDbEndpointLabel(activeIndexedDbEndpoint);
+
   if (storageMode === "mem") {
-    return "surrealdb wasm (mem fallback, non-persistent)";
+    const reason = (lastIndexedDbError ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+
+    if (reason) {
+      return `surrealdb wasm (mem fallback, non-persistent; ${persistence}; indexeddb error: ${reason})`;
+    }
+
+    return `surrealdb wasm (mem fallback, non-persistent; ${persistence})`;
   }
 
   if (storageRecovered) {
-    return "surrealdb wasm (indxdb local, recovered)";
+    return `surrealdb wasm (indxdb local:${endpoint}, recovered; ${persistence})`;
   }
 
-  return "surrealdb wasm (indxdb local)";
+  return `surrealdb wasm (indxdb local:${endpoint}; ${persistence})`;
+}
+
+function persistenceStatusLabel(): string {
+  if (persistenceState === "error") {
+    const detail = (persistenceDetail ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+
+    return detail ? `persistence: error (${detail})` : "persistence: error";
+  }
+
+  return `persistence: ${persistenceState}`;
+}
+
+async function ensurePersistentStoragePreference(): Promise<void> {
+  if (persistenceState === "persistent" || persistenceState === "granted") {
+    return;
+  }
+
+  if (typeof navigator === "undefined" || !("storage" in navigator)) {
+    persistenceState = "unavailable";
+    persistenceDetail = null;
+    return;
+  }
+
+  const storageManager = (navigator.storage as BrowserStorageManager | undefined) ?? undefined;
+  if (!storageManager) {
+    persistenceState = "unavailable";
+    persistenceDetail = null;
+    return;
+  }
+
+  try {
+    if (typeof storageManager.persisted === "function") {
+      const alreadyPersistent = await storageManager.persisted();
+      if (alreadyPersistent) {
+        persistenceState = "persistent";
+        persistenceDetail = null;
+        return;
+      }
+    }
+
+    if (typeof storageManager.persist !== "function") {
+      persistenceState = "unavailable";
+      persistenceDetail = null;
+      return;
+    }
+
+    const granted = await storageManager.persist();
+    persistenceState = granted ? "granted" : "denied";
+    persistenceDetail = null;
+  } catch (error) {
+    persistenceState = "error";
+    persistenceDetail = errorToString(error);
+  }
+}
+
+function localReadSourceLabel(): string {
+  return storageMode === "mem" ? "surrealdb-mem" : "surrealdb-local";
 }
 
 function withSlash(baseUrl: string): string {
@@ -359,6 +575,19 @@ function writeNodesCacheToLocalStorage(nodes: NodeDto[]): void {
   } catch {
     // Ignore quota/privacy failures and keep runtime behavior unchanged.
   }
+}
+
+function mergeNodesBySyncKey(...groups: NodeDto[][]): NodeDto[] {
+  const bySync = new Map<string, NodeDto>();
+
+  for (const group of groups) {
+    for (const node of group) {
+      const normalized = normalizeNode(node);
+      bySync.set(normalized.syncKey, normalized);
+    }
+  }
+
+  return Array.from(bySync.values()).sort(byTimestampDesc);
 }
 
 function defaultConfig(): AppConfig {
@@ -678,58 +907,120 @@ function normalizeConfig(input: unknown): AppConfig {
 }
 
 async function connectDb(): Promise<Surreal> {
-  async function open(endpoint: string): Promise<Surreal> {
-    const db = new Surreal({
-      engines: {
-        ...createRemoteEngines(),
-        ...createWasmEngines(),
-      },
-    });
+  await ensurePersistentStoragePreference();
 
-    await db.connect(endpoint);
-    await db.use({ namespace: DB_NAMESPACE, database: DB_NAME });
+  let lastCandidateError: unknown = null;
 
-    await db.query(`
-      DEFINE TABLE ${TABLE_TEMPORAL_NODE} SCHEMALESS;
-      DEFINE TABLE ${TABLE_APP_CONFIG} SCHEMALESS;
-      DEFINE TABLE ${TABLE_CALIBRATION} SCHEMALESS;
-    `);
-
-    const existingConfig = await selectAny(db, `${TABLE_APP_CONFIG}:singleton`);
-    if (!existingConfig) {
-      const seeded = readConfigFromLocalStorage() ?? { ...DEFAULT_CONFIG };
-      await upsertAny(db, `${TABLE_APP_CONFIG}:singleton`, seeded);
-      writeConfigToLocalStorage(seeded);
-    } else {
-      writeConfigToLocalStorage(normalizeConfig(existingConfig));
+  for (let index = 0; index < INDEXED_DB_ENDPOINT_CANDIDATES.length; index += 1) {
+    const endpoint = INDEXED_DB_ENDPOINT_CANDIDATES[index];
+    try {
+      const { db, recovered } = await connectIndexedDbCandidate(endpoint);
+      activeIndexedDbEndpoint = endpoint;
+      storageMode = "indxdb";
+      storageRecovered = recovered || index > 0;
+      lastIndexedDbError = null;
+      return db;
+    } catch (error) {
+      lastCandidateError = error;
+      lastIndexedDbError = errorToString(error);
     }
-
-    return db;
   }
 
+  const fallback = await openDbEndpoint(MEM_FALLBACK_ENDPOINT);
+  storageMode = "mem";
+  storageRecovered = false;
+  if (!lastIndexedDbError && lastCandidateError) {
+    lastIndexedDbError = errorToString(lastCandidateError);
+  }
+  return fallback;
+}
+
+async function connectIndexedDbCandidate(endpoint: string): Promise<{ db: Surreal; recovered: boolean }> {
   try {
-    const db = await open(DB_ENDPOINT);
-    storageMode = "indxdb";
-    storageRecovered = false;
-    return db;
+    return {
+      db: await openDbEndpoint(endpoint),
+      recovered: false,
+    };
   } catch (firstError) {
     if (!isIndexedDbFailure(firstError)) {
       throw firstError;
     }
 
-    await recoverIndexedDbStore();
-
-    try {
-      const recovered = await open(DB_ENDPOINT);
-      storageMode = "indxdb";
-      storageRecovered = true;
-      return recovered;
-    } catch {
-      const fallback = await open(MEM_FALLBACK_ENDPOINT);
-      storageMode = "mem";
-      storageRecovered = false;
-      return fallback;
+    if (isIndexedDbOpenTimeoutFailure(firstError)) {
+      throw firstError;
     }
+
+    await recoverIndexedDbStore(endpoint, false);
+    return {
+      db: await openDbEndpoint(endpoint),
+      recovered: true,
+    };
+  }
+}
+
+async function openDbEndpoint(endpoint: string): Promise<Surreal> {
+  if (endpoint.startsWith("indxdb://") && indexedDbOpenInFlight) {
+    if (indexedDbOpenInFlightEndpoint === endpoint) {
+      return withTimeout(
+        indexedDbOpenInFlight,
+        endpointOpenTimeoutMs(endpoint),
+        `open db endpoint ${indexedDbOpenInFlightEndpoint ?? endpoint}`,
+      );
+    }
+  }
+
+  const db = new Surreal({
+    engines: {
+      ...createRemoteEngines(),
+      ...createWasmEngines(),
+    },
+  });
+
+  let openOperation: Promise<Surreal> | null = null;
+
+  try {
+    const timeoutMs = endpointOpenTimeoutMs(endpoint);
+    openOperation = (async () => {
+      await db.connect(endpoint, {
+        namespace: DB_NAMESPACE,
+        database: DB_NAME,
+      });
+
+      await db.query(`
+        DEFINE TABLE ${TABLE_TEMPORAL_NODE} SCHEMALESS;
+        DEFINE TABLE ${TABLE_APP_CONFIG} SCHEMALESS;
+        DEFINE TABLE ${TABLE_CALIBRATION} SCHEMALESS;
+      `);
+
+      const existingConfig = await selectAny(db, `${TABLE_APP_CONFIG}:singleton`);
+      if (!existingConfig) {
+        const seeded = readConfigFromLocalStorage() ?? { ...DEFAULT_CONFIG };
+        await upsertAny(db, `${TABLE_APP_CONFIG}:singleton`, seeded);
+        writeConfigToLocalStorage(seeded);
+      } else {
+        writeConfigToLocalStorage(normalizeConfig(existingConfig));
+      }
+      return db;
+    })();
+
+    if (endpoint.startsWith("indxdb://")) {
+      indexedDbOpenInFlightEndpoint = endpoint;
+      indexedDbOpenInFlight = openOperation.finally(() => {
+        indexedDbOpenInFlight = null;
+        indexedDbOpenInFlightEndpoint = null;
+      });
+    }
+
+    await withTimeout(openOperation, timeoutMs, `open db endpoint ${endpoint}`);
+
+    return db;
+  } catch (error) {
+    // For indxdb timeout failures, avoid forcing close while IndexedDB callbacks may still be in-flight.
+    // This prevents wasm "closure invoked recursively or after being dropped" crashes.
+    if (!(endpoint.startsWith("indxdb://") && isIndexedDbOpenTimeoutFailure(error))) {
+      await db.close().catch(() => undefined);
+    }
+    throw error;
   }
 }
 
@@ -756,7 +1047,77 @@ async function getDb(): Promise<Surreal> {
     });
   }
 
-  return dbPromise;
+  const db = await dbPromise;
+
+  if (storageMode === "mem") {
+    return promoteMemFallbackToIndexedDb(db);
+  }
+
+  return db;
+}
+
+async function promoteMemFallbackToIndexedDb(currentDb: Surreal): Promise<Surreal> {
+  if (storageMode !== "mem") {
+    return currentDb;
+  }
+
+  const now = Date.now();
+  if (indexedDbPromotePromise || now - indexedDbPromoteLastAttemptAt < INDEXED_DB_PROMOTE_RETRY_MS) {
+    return currentDb;
+  }
+
+  indexedDbPromoteLastAttemptAt = now;
+
+  indexedDbPromotePromise = (async () => {
+    try {
+      await ensurePersistentStoragePreference();
+
+      const seedConfig = await readConfig(currentDb).catch(() => defaultConfig());
+      const seedNodes = await readAllNodes(currentDb).catch(() => []);
+
+      let promoted: Surreal | null = null;
+      let recovered = false;
+      let promotedEndpoint = activeIndexedDbEndpoint;
+      let promoteError: unknown = null;
+
+      for (let index = 0; index < INDEXED_DB_ENDPOINT_CANDIDATES.length; index += 1) {
+        const endpoint = INDEXED_DB_ENDPOINT_CANDIDATES[index];
+        try {
+          const attempt = await connectIndexedDbCandidate(endpoint);
+          promoted = attempt.db;
+          recovered = attempt.recovered || index > 0;
+          promotedEndpoint = endpoint;
+          break;
+        } catch (error) {
+          promoteError = error;
+          lastIndexedDbError = errorToString(error);
+        }
+      }
+
+      if (!promoted) {
+        throw promoteError ?? new Error("failed to promote mem fallback to indexeddb");
+      }
+
+      await writeConfig(promoted, seedConfig).catch(() => undefined);
+
+      for (const node of seedNodes) {
+        await upsertLocalNode(promoted, node).catch(() => undefined);
+      }
+
+      storageMode = "indxdb";
+      storageRecovered = recovered;
+      activeIndexedDbEndpoint = promotedEndpoint;
+      lastIndexedDbError = null;
+      dbPromise = Promise.resolve(promoted);
+      await currentDb.close().catch(() => undefined);
+    } catch (error) {
+      lastIndexedDbError = errorToString(error);
+    } finally {
+      indexedDbPromotePromise = null;
+    }
+  })();
+
+  return currentDb;
 }
 
 async function readConfig(db: Surreal): Promise<AppConfig> {
@@ -938,6 +1299,147 @@ function parseSttpNode(input: StoreContextInput): { node?: NodeDto; error?: stri
   return { node: normalized };
 }
 
+function normalizeChatRole(role: string): ChatMessageRole | null {
+  if (role === "system" || role === "user" || role === "assistant") {
+    return role;
+  }
+
+  return null;
+}
+
+function normalizeChatMessages(messages: ChatMessage[], options: { includeSystem: boolean }): ChatMessage[] {
+  return messages
+    .map((message) => {
+      const role = normalizeChatRole(String(message.role));
+      const content = String(message.content ?? "").trim();
+      if (!role || !content) {
+        return null;
+      }
+
+      if (!options.includeSystem && role === "system") {
+        return null;
+      }
+
+      return {
+        role,
+        content,
+      };
+    })
+    .filter((message): message is ChatMessage => message !== null);
+}
+
+function toConversationTranscript(messages: ChatMessage[]): string {
+  return messages
+    .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+    .join("\n\n")
+    .trim();
+}
+
+function stripMarkdownFence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("```")) {
+    return trimmed;
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const body: string[] = [];
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim().startsWith("```")) {
+      break;
+    }
+    body.push(line);
+  }
+
+  return body.join("\n").trim();
+}
+
+function normalizeModelNodeCandidate(text: string): string {
+  const unfenced = stripMarkdownFence(text);
+  const startMarkers = ["⊕⟨", "⦿⟨", "◈⟨", "⍉⟨", "⏣"];
+  const markerIndex = startMarkers
+    .map((marker) => unfenced.indexOf(marker))
+    .filter((index) => index >= 0)
+    .reduce((min, index) => (index < min ? index : min), Number.POSITIVE_INFINITY);
+
+  if (Number.isFinite(markerIndex)) {
+    return unfenced.slice(markerIndex).trim();
+  }
+
+  return unfenced.trim();
+}
+
+function buildEncodePrompt(
+  sessionId: string,
+  parserErrorHint?: string,
+  previousNodeCandidate?: string,
+): string {
+  const expectedTimestampUtc = new Date().toISOString();
+  const parts = [
+    `session_id: ${sessionId}`,
+    `expected_timestamp_utc: ${expectedTimestampUtc}`,
+    "",
+    "Use expected_timestamp_utc as the ⦿ timestamp field unless the conversation itself provides a stronger explicit timestamp.",
+    "Use the full prior chat history in this request as source context.",
+    "Encode the conversation above into exactly one valid STTP node.",
+  ];
+
+  const errorHint = parserErrorHint?.trim();
+  if (errorHint) {
+    parts.push(
+      "",
+      "Parser feedback from previous attempt:",
+      errorHint,
+      "Use this feedback to repair the node while preserving conversation meaning.",
+    );
+  }
+
+  const previousCandidate = previousNodeCandidate?.trim();
+  if (previousCandidate) {
+    parts.push(
+      "",
+      "Previous node candidate to repair:",
+      previousCandidate,
+    );
+  }
+
+  parts.push(
+    "",
+    "Return only the node text.",
+  );
+
+  return parts.join("\n");
+}
+
+async function runOllamaChat(config: AppConfig, messages: ChatMessage[]): Promise<string | null> {
+  const payload: OllamaChatRequest = {
+    model: config.ollamaModel,
+    messages,
+    stream: false,
+  };
+
+  const response = await fetch(joinUrl(config.ollamaBaseUrl, "/api/chat"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`ollama response status failed: ${response.status} ${body}`.trim());
+  }
+
+  const parsed = (await response.json().catch(() => ({}))) as OllamaChatResponse;
+  const text = parsed.message?.content?.trim();
+  return text ? text : null;
+}
+
 function parseAiResponse(text: string): AiSummary | null {
   const cleaned = text
     .replace(/Thinking\.\.\.[\s\S]*?\.\.\.done thinking\./gi, "")
@@ -1017,11 +1519,10 @@ function parseGatewayStoreOutcome(value: unknown): GatewayStoreOutcome {
   const upsertStatus = readString(result, "upsertStatus", "upsert_status").toLowerCase();
   const duplicateFromStatus = upsertStatus === "duplicate" || upsertStatus === "skipped";
   const duplicate = (result.duplicateSkipped as boolean | undefined) ?? duplicateFromStatus;
+  const validationError = readString(result, "validationError", "validation_error", "error") || null;
 
   const validField = result.valid;
-  const valid = typeof validField === "boolean" ? validField : true;
-
-  const validationError = readString(result, "validationError", "validation_error", "error") || null;
+  const valid = typeof validField === "boolean" ? validField : validationError === null;
 
   return {
     valid,
@@ -1172,9 +1673,16 @@ export function createWebResonantiaClient(): ResonantiaClient {
       return result.config;
     },
 
-    async listNodes(limit: number, sessionId?: string): Promise<{ nodes: NodeDto[]; retrieved: number }> {
+    async getComposeEncodePreamble(): Promise<string> {
+      return COMPOSE_ENCODE_PREAMBLE;
+    },
+
+    async listNodes(limit: number, sessionId?: string): Promise<ListNodesResponse> {
       const cappedLimit = clamp(Math.trunc(limit), 1, 400);
       const sessionFilter = sessionId?.trim();
+      const cachedNodes = readNodesCacheFromLocalStorage()
+        .filter((node) => !sessionFilter || node.sessionId === sessionFilter)
+        .sort(byTimestampDesc);
 
       let db: Surreal | null = null;
       let localNodes: NodeDto[] = [];
@@ -1194,6 +1702,8 @@ export function createWebResonantiaClient(): ResonantiaClient {
         return {
           nodes: localNodes.slice(0, cappedLimit),
           retrieved: Math.min(localNodes.length, cappedLimit),
+          source: localReadSourceLabel(),
+          transport: transportLabel(),
         };
       }
 
@@ -1201,27 +1711,45 @@ export function createWebResonantiaClient(): ResonantiaClient {
       const fallbackGateway = normalizeGatewayBaseUrl(cachedConfig?.gatewayBaseUrl ?? "");
 
       if (fallbackGateway) {
-        const remoteNodes = (await fetchGatewayNodes(fallbackGateway, sessionFilter))
-          .sort(byTimestampDesc)
-          .slice(0, cappedLimit);
+        try {
+          const remoteNodes = (await fetchGatewayNodes(fallbackGateway, sessionFilter)).sort(byTimestampDesc);
+          const scoped = remoteNodes.slice(0, cappedLimit);
 
-        writeNodesCacheToLocalStorage(remoteNodes);
-        await hydrateLocalCacheFromRemote(db, remoteNodes);
+          writeNodesCacheToLocalStorage(remoteNodes);
+          await hydrateLocalCacheFromRemote(db, remoteNodes);
 
-        return {
-          nodes: remoteNodes,
-          retrieved: remoteNodes.length,
-        };
+          return {
+            nodes: scoped,
+            retrieved: scoped.length,
+            source: "cloud-gateway",
+            transport: transportLabel(),
+          };
+        } catch (gatewayError) {
+          if (cachedNodes.length > 0) {
+            const scoped = cachedNodes.slice(0, cappedLimit);
+            return {
+              nodes: scoped,
+              retrieved: scoped.length,
+              source: "fallback-cache",
+              transport: transportLabel(),
+            };
+          }
+
+          if (localError) {
+            throw localError;
+          }
+
+          throw gatewayError;
+        }
       }
 
-      const cachedNodes = readNodesCacheFromLocalStorage()
-        .filter((node) => !sessionFilter || node.sessionId === sessionFilter)
-        .slice(0, cappedLimit);
-
       if (cachedNodes.length > 0) {
+        const scoped = cachedNodes.slice(0, cappedLimit);
         return {
-          nodes: cachedNodes,
-          retrieved: cachedNodes.length,
+          nodes: scoped,
+          retrieved: scoped.length,
+          source: "fallback-cache",
+          transport: transportLabel(),
         };
       }
 
@@ -1232,6 +1760,8 @@ export function createWebResonantiaClient(): ResonantiaClient {
       return {
         nodes: [],
         retrieved: 0,
+        source: localReadSourceLabel(),
+        transport: transportLabel(),
       };
     },
 
@@ -1257,6 +1787,7 @@ export function createWebResonantiaClient(): ResonantiaClient {
       const node = normalizeNode(parsed.node);
       const existing = (await readAllNodes(db)).find((entry) => entry.syncKey === node.syncKey);
       if (existing) {
+        writeNodesCacheToLocalStorage(mergeNodesBySyncKey(readNodesCacheFromLocalStorage(), [existing]));
         return {
           nodeId: existing.syntheticId,
           psi: existing.psi,
@@ -1268,6 +1799,7 @@ export function createWebResonantiaClient(): ResonantiaClient {
       }
 
       await upsertLocalNode(db, node);
+      writeNodesCacheToLocalStorage(mergeNodesBySyncKey(readNodesCacheFromLocalStorage(), [node]));
 
       return {
         nodeId: node.syntheticId,
@@ -1311,7 +1843,17 @@ export function createWebResonantiaClient(): ResonantiaClient {
         throw new Error("cloud sync path not set. open settings -> advanced sync once, then sync is one-click.");
       }
 
-      const localNodes = await readAllNodes(db);
+      let localNodes: NodeDto[] = [];
+      try {
+        localNodes = await readAllNodes(db);
+      } catch {
+        const cachedNodes = readNodesCacheFromLocalStorage();
+        if (cachedNodes.length > 0) {
+          localNodes = cachedNodes;
+          await hydrateLocalCacheFromRemote(db, cachedNodes);
+        }
+      }
+
       const scopedLocalNodes = sessionFilter
         ? localNodes.filter((node) => node.sessionId === sessionFilter)
         : localNodes;
@@ -1372,6 +1914,8 @@ export function createWebResonantiaClient(): ResonantiaClient {
         download.updated += 1;
       }
 
+      writeNodesCacheToLocalStorage(Array.from(localBySync.values()));
+
       return {
         sessionId: sessionFilter || "all",
         remoteBaseUrl: gatewayBaseUrl,
@@ -1414,29 +1958,62 @@ export function createWebResonantiaClient(): ResonantiaClient {
       };
     },
 
+    async chatCompose(request: ComposeChatRequest): Promise<string | null> {
+      const db = await getDb();
+      const config = await readConfig(db);
+      const conversation = normalizeChatMessages(request.messages, { includeSystem: false });
+      if (conversation.length === 0) {
+        return null;
+      }
+
+      return runOllamaChat(config, [
+        { role: "system", content: COMPOSE_CHAT_PREAMBLE },
+        ...conversation,
+      ]);
+    },
+
+    async encodeCompose(request: EncodeComposeRequest): Promise<string> {
+      const db = await getDb();
+      const config = await readConfig(db);
+      const sessionId = request.sessionId.trim() || "resonantia-local";
+      const conversation = normalizeChatMessages(request.messages, { includeSystem: false });
+      if (conversation.length === 0) {
+        throw new Error("encode requires at least one chat message");
+      }
+
+      const text = await runOllamaChat(config, [
+        { role: "system", content: COMPOSE_ENCODE_PREAMBLE },
+        ...conversation,
+        {
+          role: "user",
+          content: buildEncodePrompt(
+            sessionId,
+            request.parserErrorHint,
+            request.previousNodeCandidate,
+          ),
+        },
+      ]);
+
+      if (!text) {
+        throw new Error("model returned an empty encode response");
+      }
+
+      const normalized = normalizeModelNodeCandidate(text);
+      if (!normalized.includes("⏣")) {
+        throw new Error("encode response did not include an STTP node marker");
+      }
+
+      return normalized;
+    },
+
     async summarizeNode(rawNode: string): Promise<AiSummary | null> {
       const db = await getDb();
       const config = await readConfig(db);
 
-      const response = await fetch(joinUrl(config.ollamaBaseUrl, "/api/chat"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: config.ollamaModel,
-          messages: [{ role: "user", content: rawNode }],
-          stream: false,
-        }),
-      });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw new Error(`ollama response status failed: ${response.status} ${body}`.trim());
-      }
-
-      const payload = (await response.json().catch(() => ({}))) as OllamaChatResponse;
-      const text = payload.message?.content?.trim();
+      const text = await runOllamaChat(config, [
+        { role: "system", content: TRANSMUTE_PREAMBLE },
+        { role: "user", content: rawNode },
+      ]);
       if (!text) {
         return null;
       }

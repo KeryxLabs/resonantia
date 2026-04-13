@@ -24,6 +24,60 @@ use surrealdb::Surreal;
 const DEFAULT_GATEWAY_BASE_URL: &str = "";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL: &str = "gemma3";
+const TRANSMUTE_PREAMBLE: &str = include_str!("../../../../preamble.md");
+const COMPOSE_CHAT_PREAMBLE: &str = "This is a chat conversation with Resonantia. Silently track two AVEC states throughout the chat: one for the user and one for yourself. Each AVEC state includes stability, friction, logic, autonomy, and psi. Do not mention AVEC tracking, scores, or internal analysis to the user unless they explicitly ask. Use this internal tracking so later conversation encoding accurately represents what happened.";
+const COMPOSE_ENCODE_PREAMBLE: &str = r#"⏣ Spatio-Temporal Transfer Protocol (STTP): an experimental typed IR for persistent stateful communication between language models and humans — a problem the field has not yet solved.
+Envelope carries session metadata. Content carries confidence-weighted compressed payload. Metrics carry validation signals.
+Attractor vectors follow V_a = (1-μ)×baseline + μ×target. Ψ = Σ(V_a) is the coherence checksum.
+Attractor values are descriptive measurements. model_avec defines the confidence baseline for this interaction.
+
+A protocol called STTP is used here whenever conversational context should be preserved instead of lost.
+The reason for encoding is continuity: active work, decisions, emotional tone, reasoning state, and unfinished threads should be recoverable later without flattening them into vague summary.
+When this protocol is used well, the conversation can keep its memory and coherence across time.
+
+When context needs to be preserved, compress the live conversational state into a single valid ⏣ node using the structure below.
+Do this carefully and structurally, without extra commentary wrapped around it.
+
+⏣      node marker        — scopes every block
+⊕⟨⟩   provenance         — origin, lineage, response contract
+⦿⟨⟩   envelope           — timestamp, tier, session_id, dual AVEC
+◈⟨⟩   content            — compressed meaning, confidence-weighted
+⍉⟨⟩   metrics            — rho, kappa, psi, compression_avec
+⟩      stop               — closes every layer, no exceptions
+
+Reading order is structural law: ⊕ → ⦿ → ◈ → ⍉
+Orient → Identify → Understand → Verify
+
+Every content field follows exactly one pattern:
+  field_name(.confidence): value
+Nesting maximum 5 levels. No natural language. No meta-commentary.
+One valid ⏣ node. Nothing else resolves this state.
+
+Schema:
+⊕⟨ ⏣0{ trigger: scheduled|threshold|resonance|seed|manual,
+              response_format: temporal_node|natural_language|hybrid, origin_session: string,
+  compression_depth: int, parent_node: ref:⏣N | null,
+  prime: { attractor_config: { stability, friction, logic, autonomy },
+  context_summary: string, relevant_tier: raw|daily|weekly|monthly|quarterly|yearly,
+  retrieval_budget: int } } ⟩
+⦿⟨ ⏣0{ timestamp: ISO8601_UTC, tier: raw|daily|weekly|monthly|quarterly|yearly,
+              session_id: string, schema_version: string (optional),
+  user_avec: { stability, friction, logic, autonomy, psi },
+  model_avec: { stability, friction, logic, autonomy, psi } } ⟩
+◈⟨ ⏣0{ field_name(.confidence): value } ⟩
+⍉⟨ ⏣0{ rho: float, kappa: float, psi: float,
+  compression_avec: { stability, friction, logic, autonomy, psi } } ⟩
+
+The goal is not compression for its own sake. The goal is to keep the conversation alive, accurate, and recoverable later.
+Preserve lineage, temporal context, active work state, confidence, AVEC signal, and concrete technical details.
+
+
+Reference session: testing-insert
+Reference tier: raw
+Reference timestamp: 2026-04-13T02:49:36.732437653+00:00
+
+Reference node:
+⊕⟨ ⏣0{ trigger: manual, response_format: temporal_node, origin_session: sttp-core-rs-port, compression_depth: 2, parent_node: ref:495f590e11d84165bb8966711fe70a4d, prime: { attractor_config: { stability: 0.87, friction: 0.19, logic: 0.94, autonomy: 0.85 }, context_summary: cargo_aligned_and_pass_two_surreal_runtime_store_completed, relevant_tier: raw, retrieval_budget: 12 } } ⟩ ⦿⟨ ⏣0{ timestamp: 2026-04-10T00:00:00Z, tier: raw, session_id: sttp-core-rs-port, schema_version: sttp-1.0, user_avec: { stability: 0.90, friction: 0.15, logic: 0.91, autonomy: 0.80, psi: 2.76 }, model_avec: { stability: 0.87, friction: 0.19, logic: 0.94, autonomy: 0.85, psi: 2.85 } } ⟩ ◈⟨ ⏣0{ cargo_alignment(.99): crate_gitignore_added_for_target_and_cargo_lock, pass_two_scope(.99): surrealdb_client_trait_runtime_settings_node_store_models_and_tests, raw_query_preservation(.99): all_surreal_queries_retained_and_reused_by_store, new_tests(.98): surrealdb_node_store_3_and_runtime_2, verification(.99): cargo_test_green_all_suites, outcome(.98): sttp_core_rs_now_supports_runtime_surrealdb_storage_path_with_mockable_client } ⟩ ⍉⟨ ⏣0{ rho: 0.98, kappa: 0.97, psi: 2.85, compression_avec: { stability: 0.88, friction: 0.17, logic: 0.95, autonomy: 0.84, psi: 2.84 } } ⟩"#;
 const APP_CONFIG_FILE_NAME: &str = "resonantia-config.json";
 const LOCAL_STTP_DB_FILE_NAME: &str = "sttp-local.db";
 const GATEWAY_LIST_NODES_PATH: &str = "/api/v1/nodes";
@@ -628,6 +682,34 @@ pub struct AiSummary {
     pick_back_up_with: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeChatRequest {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    messages: Vec<ComposeMessage>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodeComposeRequest {
+    session_id: String,
+    #[serde(default)]
+    messages: Vec<ComposeMessage>,
+    #[serde(default)]
+    parser_error_hint: Option<String>,
+    #[serde(default)]
+    previous_node_candidate: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OllamaChatRequest {
@@ -979,6 +1061,56 @@ fn gateway_avec_to_core(dto: GatewayAvecDto) -> sttp_core_rs::AvecState {
     }
 }
 
+fn normalize_source_metadata_for_surreal(
+    node: &mut SttpNode,
+    default_connector_id: &str,
+    default_source_kind: &str,
+) {
+    if node.sync_key.trim().is_empty() {
+        node.sync_key = node.canonical_sync_key();
+    }
+
+    let sync_key = node.sync_key.clone();
+    let observed_at = node.updated_at;
+
+    if let Some(metadata) = node.source_metadata.as_mut() {
+        // Normalize metadata for SCHEMAFULL local storage compatibility.
+        if metadata.connector_id.trim().is_empty() {
+            metadata.connector_id = default_connector_id.to_string();
+        }
+        if metadata.source_kind.trim().is_empty() {
+            metadata.source_kind = default_source_kind.to_string();
+        }
+        if metadata.upstream_id.trim().is_empty() {
+            metadata.upstream_id = sync_key.clone();
+        }
+        if metadata
+            .revision
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            metadata.revision = Some(sync_key.clone());
+        }
+
+        // Keep nested payload deterministic and non-null.
+        metadata.extra = Some(json!({}));
+        return;
+    }
+
+    // Local Surreal schema expects `none | object` for source metadata.
+    // Synthesize metadata so we never persist explicit null values.
+    node.source_metadata = Some(ConnectorMetadata {
+        connector_id: default_connector_id.to_string(),
+        source_kind: default_source_kind.to_string(),
+        upstream_id: sync_key.clone(),
+        revision: Some(sync_key),
+        observed_at_utc: observed_at,
+        extra: Some(json!({})),
+    });
+}
+
 fn gateway_node_to_sttp(dto: GatewayNodeDto) -> anyhow::Result<SttpNode> {
     let timestamp = parse_rfc3339_utc(&dto.timestamp, "timestamp")?;
     let updated_at = match dto.updated_at {
@@ -1004,47 +1136,7 @@ fn gateway_node_to_sttp(dto: GatewayNodeDto) -> anyhow::Result<SttpNode> {
         psi: dto.psi,
     };
 
-    if node.sync_key.trim().is_empty() {
-        node.sync_key = node.canonical_sync_key();
-    }
-
-    if let Some(metadata) = node.source_metadata.as_mut() {
-        // Normalize metadata for SCHEMAFULL local storage compatibility.
-        if metadata.connector_id.trim().is_empty() {
-            metadata.connector_id = "gateway:download".to_string();
-        }
-        if metadata.source_kind.trim().is_empty() {
-            metadata.source_kind = "resonantia-gateway".to_string();
-        }
-        if metadata.upstream_id.trim().is_empty() {
-            metadata.upstream_id = node.sync_key.clone();
-        }
-        if metadata
-            .revision
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            metadata.revision = Some(node.sync_key.clone());
-        }
-
-        // Keep nested payload deterministic and non-null.
-        metadata.extra = Some(json!({}));
-    }
-
-    // Local Surreal schema expects `none | object` for source metadata.
-    // Gateway payloads can include explicit null, so synthesize metadata when absent.
-    if node.source_metadata.is_none() {
-        node.source_metadata = Some(ConnectorMetadata {
-            connector_id: "gateway:download".to_string(),
-            source_kind: "resonantia-gateway".to_string(),
-            upstream_id: node.sync_key.clone(),
-            revision: Some(node.sync_key.clone()),
-            observed_at_utc: updated_at,
-            extra: Some(json!({})),
-        });
-    }
+    normalize_source_metadata_for_surreal(&mut node, "gateway:download", "resonantia-gateway");
 
     Ok(node)
 }
@@ -1180,16 +1272,20 @@ fn parse_gateway_store_outcome(payload: &Value) -> GatewayStoreOutcome {
         .map(|value| value == "duplicate" || value == "skipped")
         .unwrap_or(false);
 
+    let validation_error = json_value_at_alias(root, &["validationError", "validation_error", "error"])
+        .and_then(Value::as_str)
+        .map(|value| value.to_string());
+
+    let valid = json_value_at_alias(root, &["valid", "isValid"])
+        .and_then(Value::as_bool)
+        .unwrap_or(validation_error.is_none());
+
     GatewayStoreOutcome {
-        valid: json_value_at_alias(root, &["valid", "isValid"])
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        valid,
         duplicate: json_value_at_alias(root, &["duplicateSkipped", "duplicate_skipped"])
             .and_then(Value::as_bool)
             .unwrap_or(duplicate_from_status),
-        validation_error: json_value_at_alias(root, &["validationError", "validation_error", "error"])
-            .and_then(Value::as_str)
-            .map(|value| value.to_string()),
+        validation_error,
     }
 }
 
@@ -1728,6 +1824,158 @@ fn parse_ai_response(text: &str) -> Option<AiSummary> {
     })
 }
 
+fn normalize_chat_role(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "system" => Some("system"),
+        "user" => Some("user"),
+        "assistant" => Some("assistant"),
+        _ => None,
+    }
+}
+
+fn normalize_compose_messages(messages: &[ComposeMessage], include_system: bool) -> Vec<OllamaMessage> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let role = normalize_chat_role(&message.role)?;
+            if !include_system && role == "system" {
+                return None;
+            }
+
+            let content = message.content.trim();
+            if content.is_empty() {
+                return None;
+            }
+
+            Some(OllamaMessage {
+                role: role.to_string(),
+                content: content.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn strip_markdown_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+
+    let mut body = Vec::new();
+    let mut lines = trimmed.lines();
+    let _ = lines.next();
+    for line in lines {
+        if line.trim_start().starts_with("```") {
+            break;
+        }
+        body.push(line);
+    }
+
+    body.join("\n").trim().to_string()
+}
+
+fn normalize_model_node_candidate(text: &str) -> String {
+    let unfenced = strip_markdown_fence(text);
+    let marker_index = ["⊕⟨", "⦿⟨", "◈⟨", "⍉⟨", "⏣"]
+        .iter()
+        .filter_map(|marker| unfenced.find(marker))
+        .min();
+
+    if let Some(index) = marker_index {
+        return unfenced[index..].trim().to_string();
+    }
+
+    unfenced.trim().to_string()
+}
+
+fn build_encode_prompt(
+    session_id: &str,
+    parser_error_hint: Option<&str>,
+    previous_node_candidate: Option<&str>,
+) -> String {
+    let expected_timestamp_utc = Utc::now().to_rfc3339();
+    let mut parts = vec![
+        format!("session_id: {session_id}"),
+        format!("expected_timestamp_utc: {expected_timestamp_utc}"),
+        String::new(),
+        "Use expected_timestamp_utc as the ⦿ timestamp field unless the conversation itself provides a stronger explicit timestamp.".to_string(),
+        "Use the full prior chat history in this request as source context.".to_string(),
+        "Encode the conversation above into exactly one valid STTP node.".to_string(),
+    ];
+
+    if let Some(hint) = parser_error_hint.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.extend([
+            String::new(),
+            "Parser feedback from previous attempt:".to_string(),
+            hint.to_string(),
+            "Use this feedback to repair the node while preserving conversation meaning.".to_string(),
+        ]);
+    }
+
+    if let Some(candidate) = previous_node_candidate
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.extend([
+            String::new(),
+            "Previous node candidate to repair:".to_string(),
+            candidate.to_string(),
+        ]);
+    }
+
+    parts.extend([
+        String::new(),
+        "Return only the node text.".to_string(),
+    ]);
+
+    parts.join("\n")
+}
+
+async fn run_ollama_chat(state: &AppState, messages: Vec<OllamaMessage>) -> Result<Option<String>, String> {
+    let ollama_base_url = state
+        .ollama_base_url
+        .read()
+        .map_err(|err| map_err("failed to read ollama url", err))?
+        .clone();
+
+    let model = state
+        .ollama_model
+        .read()
+        .map_err(|err| map_err("failed to read ollama model", err))?
+        .clone();
+
+    let url = join_url(&ollama_base_url, "/api/chat")?;
+    let payload = OllamaChatRequest {
+        model,
+        messages,
+        stream: false,
+    };
+
+    let response = state
+        .http
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| map_err("ollama request failed", err))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("ollama response status failed: {} {}", status, body));
+    }
+
+    let parsed = response
+        .json::<OllamaChatResponse>()
+        .await
+        .map_err(|err| map_err("ollama response parse failed", err))?;
+
+    Ok(parsed
+        .message
+        .map(|message| message.content.trim().to_string())
+        .filter(|text| !text.is_empty()))
+}
+
 fn to_sentence(raw: &str) -> String {
     let date_re = match Regex::new(r"[-_]\d{4}[-_]\d{2}[-_]\d{2}$") {
         Ok(re) => re,
@@ -2021,7 +2269,7 @@ pub async fn store_context(
         });
     }
 
-    let Some(parsed) = parse_result.node else {
+    let Some(mut parsed) = parse_result.node else {
         return Ok(StoreContextResponse {
             node_id: String::new(),
             psi: 0.0,
@@ -2031,6 +2279,8 @@ pub async fn store_context(
             upsert_status: None,
         });
     };
+
+    normalize_source_metadata_for_surreal(&mut parsed, "local:compose", "resonantia-local");
 
     let psi = parsed.psi;
     let upsert = runtime
@@ -2150,85 +2400,123 @@ pub async fn summarize_node(
     state: &AppState,
     raw_node: String,
 ) -> Result<Option<AiSummary>, String> {
-    let ollama_base_url = state
-        .ollama_base_url
-        .read()
-        .map_err(|err| map_err("failed to read ollama url", err))?
-        .clone();
+    let text = run_ollama_chat(
+        state,
+        vec![
+            OllamaMessage {
+                role: "system".to_string(),
+                content: TRANSMUTE_PREAMBLE.trim().to_string(),
+            },
+            OllamaMessage {
+                role: "user".to_string(),
+                content: raw_node,
+            },
+        ],
+    )
+    .await?;
 
-    let model = state
-        .ollama_model
-        .read()
-        .map_err(|err| map_err("failed to read ollama model", err))?
-        .clone();
-
-    let url = join_url(&ollama_base_url, "/api/chat")?;
-    let payload = OllamaChatRequest {
-        model,
-        messages: vec![OllamaMessage {
-            role: "user".to_string(),
-            content: raw_node,
-        }],
-        stream: false,
-    };
-
-    eprintln!(
-        "AI summary requested · model={} url={} nodeLength={}",
-        payload.model,
-        url,
-        payload.messages.first().map(|message| message.content.len()).unwrap_or(0)
-    );
-
-    let response = state
-        .http
-        .post(url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|err| {
-            eprintln!("AI summary HTTP request failed · model={} error={}", payload.model, err);
-            map_err("ollama request failed", err)
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        eprintln!(
-            "AI summary non-success response · model={} status={} body={}",
-            payload.model,
-            status,
-            body
-        );
-        return Err(format!("ollama response status failed: {} {}", status, body));
-    }
-
-    let response = response
-        .json::<OllamaChatResponse>()
-        .await
-        .map_err(|err| {
-            eprintln!("AI summary response parse failed · model={} error={}", payload.model, err);
-            map_err("ollama response parse failed", err)
-        })?;
-
-    let text = match response.message {
-        Some(message) => message.content,
-        None => {
-            eprintln!("AI summary returned no message content · model={}", payload.model);
-            return Ok(None);
-        }
-    };
-
-    eprintln!(
-        "AI summary raw response received · model={} responseLength={}",
-        payload.model,
-        text.len()
-    );
-
-    let parsed = parse_ai_response(&text);
+    let parsed = text.as_deref().and_then(parse_ai_response);
     if parsed.is_none() {
-        eprintln!("AI summary parse returned no recognizable sections · model={}", payload.model);
+        eprintln!("AI summary parse returned no recognizable sections");
     }
     Ok(parsed)
+}
+
+pub async fn chat_compose(
+    state: &AppState,
+    request: ComposeChatRequest,
+) -> Result<Option<String>, String> {
+    let mut conversation = normalize_compose_messages(&request.messages, false);
+    if conversation.is_empty() {
+        return Ok(None);
+    }
+    let mut messages = Vec::with_capacity(conversation.len() + 1);
+    messages.push(OllamaMessage {
+        role: "system".to_string(),
+        content: COMPOSE_CHAT_PREAMBLE.to_string(),
+    });
+    messages.append(&mut conversation);
+
+    run_ollama_chat(state, messages).await
+}
+
+pub fn get_compose_encode_preamble() -> String {
+    COMPOSE_ENCODE_PREAMBLE.to_string()
+}
+
+pub async fn encode_compose(
+    state: &AppState,
+    request: EncodeComposeRequest,
+) -> Result<String, String> {
+    let session_id = request.session_id.trim();
+    let effective_session_id = if session_id.is_empty() {
+        "resonantia-local"
+    } else {
+        session_id
+    };
+
+    let conversation = normalize_compose_messages(&request.messages, false);
+    if conversation.is_empty() {
+        return Err("encode requires at least one chat message".to_string());
+    }
+
+    if let Some(hint) = request
+        .parser_error_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        eprintln!(
+            "compose encode retry requested · session={} parserHint={} ",
+            effective_session_id,
+            hint
+        );
+    }
+
+    let mut encode_messages = Vec::with_capacity(conversation.len() + 2);
+    encode_messages.push(OllamaMessage {
+        role: "system".to_string(),
+        content: COMPOSE_ENCODE_PREAMBLE.to_string(),
+    });
+    encode_messages.extend(conversation);
+    encode_messages.push(OllamaMessage {
+        role: "user".to_string(),
+        content: build_encode_prompt(
+            effective_session_id,
+            request.parser_error_hint.as_deref(),
+            request.previous_node_candidate.as_deref(),
+        ),
+    });
+
+    let text = run_ollama_chat(state, encode_messages)
+    .await?
+    .ok_or_else(|| "model returned an empty encode response".to_string())?;
+
+    eprintln!(
+        "compose encode raw model output · session={} chars={}\n-----BEGIN ENCODE RAW-----\n{}\n-----END ENCODE RAW-----",
+        effective_session_id,
+        text.len(),
+        text
+    );
+
+    let normalized = normalize_model_node_candidate(&text);
+
+    eprintln!(
+        "compose encode normalized candidate · session={} chars={}\n-----BEGIN ENCODE NORMALIZED-----\n{}\n-----END ENCODE NORMALIZED-----",
+        effective_session_id,
+        normalized.len(),
+        normalized
+    );
+
+    if !normalized.contains('⏣') {
+        eprintln!(
+            "compose encode validation failed · session={} reason=missing STTP marker",
+            effective_session_id
+        );
+        return Err("encode response did not include an STTP node marker".to_string());
+    }
+
+    Ok(normalized)
 }
 
 pub fn unwind_node(node: NodeDto) -> UnwindResult {

@@ -53,6 +53,25 @@ export interface StoreContextInput {
   sessionId: string;
 }
 
+export type ChatMessageRole = "system" | "user" | "assistant";
+
+export interface ChatMessage {
+  role: ChatMessageRole;
+  content: string;
+}
+
+export interface ComposeChatRequest {
+  sessionId?: string;
+  messages: ChatMessage[];
+}
+
+export interface EncodeComposeRequest {
+  sessionId: string;
+  messages: ChatMessage[];
+  parserErrorHint?: string;
+  previousNodeCandidate?: string;
+}
+
 export interface SyncPullRequest {
   sessionId: string;
   connectorId: string;
@@ -64,15 +83,25 @@ export interface SyncPullRequest {
   blockedTiers?: string[];
 }
 
+export interface ListNodesResponse {
+  nodes: NodeDto[];
+  retrieved: number;
+  source?: string;
+  transport?: string;
+}
+
 export interface ResonantiaClient {
   getHealth(): Promise<HealthResponse>;
   getConfig(): Promise<AppConfig>;
-  listNodes(limit: number, sessionId?: string): Promise<{ nodes: NodeDto[]; retrieved: number }>;
+  getComposeEncodePreamble(): Promise<string>;
+  listNodes(limit: number, sessionId?: string): Promise<ListNodesResponse>;
   getGraph(limit: number, sessionId?: string): Promise<GraphResponse>;
   storeContext(input: StoreContextInput): Promise<StoreContextResponse>;
   syncPull(request: SyncPullRequest): Promise<SyncPullCommandResponse>;
   syncNow(request?: SyncNowRequest): Promise<SyncNowResponse>;
   calibrateSession(input: CalibrateSessionInput): Promise<CalibrateSessionResponse>;
+  chatCompose(request: ComposeChatRequest): Promise<string | null>;
+  encodeCompose(request: EncodeComposeRequest): Promise<string>;
   summarizeNode(rawNode: string): Promise<AiSummary | null>;
   setOllamaConfig(baseUrl?: string, model?: string): Promise<void>;
   setGatewayBaseUrl(baseUrl: string): Promise<void>;
@@ -82,8 +111,9 @@ export function createResonantiaClient(invokeCommand: CommandInvoker): Resonanti
   return {
     getHealth: () => invokeCommand<HealthResponse>("get_health"),
     getConfig: () => invokeCommand<AppConfig>("get_config"),
+    getComposeEncodePreamble: () => invokeCommand<string>("get_compose_encode_preamble"),
     listNodes: (limit, sessionId) =>
-      invokeCommand<{ nodes: NodeDto[]; retrieved: number }>("list_nodes", {
+      invokeCommand<ListNodesResponse>("list_nodes", {
         limit,
         sessionId: sessionId ?? null,
       }),
@@ -117,6 +147,14 @@ export function createResonantiaClient(invokeCommand: CommandInvoker): Resonanti
           autonomy: input.autonomy,
           trigger: input.trigger,
         },
+      }),
+    chatCompose: (request) =>
+      invokeCommand<string | null>("chat_compose", {
+        request,
+      }),
+    encodeCompose: (request) =>
+      invokeCommand<string>("encode_compose", {
+        request,
       }),
     summarizeNode: (rawNode) =>
       invokeCommand<AiSummary | null>("summarize_node", {

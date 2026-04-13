@@ -5,9 +5,12 @@
   import { resonantiaClient } from './resonantiaClient';
   import type {
     AiSummary,
+    ChatMessage,
     GraphResponse,
     GraphSessionDto,
     GraphNodeDto,
+    HealthResponse,
+    ListNodesResponse,
     NodeDto,
     StoreContextResponse,
     SyncNowResponse,
@@ -35,6 +38,10 @@
   let graph: GraphResponse | null = null;
   let loading = true;
   let error: string | null = null;
+  let sourceBadgeLabel = 'source: pending';
+  let sourceBadgeTitle = 'read path: n/a · transport: n/a';
+  let sourceBadgeTone: 'unknown' | 'local' | 'cloud' | 'mem' = 'unknown';
+  let lastTransportLabel = '';
   let sessionAvecMap: Record<string, { stability: number; friction: number; logic: number; autonomy: number; psi: number }> = {};
   let nodeAvecMap: Record<string, { stability: number; friction: number; logic: number; autonomy: number; psi: number }> = {};
 
@@ -287,11 +294,15 @@
     try {
       loading = true;
       error   = null;
-      const [graphRes, nodesRes] = await Promise.all([
+      const [graphRes, nodesRes]: [GraphResponse, ListNodesResponse] = await Promise.all([
         resonantiaClient.getGraph(200),
         resonantiaClient.listNodes(400),
       ]);
       graph = graphRes;
+      if (nodesRes.transport) {
+        lastTransportLabel = nodesRes.transport;
+      }
+      applySourceBadge(nodesRes.source, nodesRes.transport ?? lastTransportLabel);
       hydrateAvecMaps(graphRes, nodesRes.nodes);
       layoutConstellation();
       camX = targetCamX = W() / 2;
@@ -745,10 +756,14 @@
     setTimeout(() => { cardVisible = true; }, 520);
 
     try {
-      const res = await resonantiaClient.listNodes(
+      const res: ListNodesResponse = await resonantiaClient.listNodes(
         Math.max(selectedSession?.nodeCount ?? 50, 50),
         n.sessionId,
       );
+      if (res.transport) {
+        lastTransportLabel = res.transport;
+      }
+      applySourceBadge(res.source, res.transport ?? lastTransportLabel);
       const dto = res.nodes.find(node => matchesSelectedNode(n, node)) ?? null;
       if (dto && cardData) cardData = { ...cardData, nodeDto: dto };
     } catch { /* card shows what it has */ }
@@ -1505,8 +1520,56 @@
 
   // ── Health ───────────────────────────────────────────────────
   let healthy = false;
+
+  function sourceFromTransport(transport: string): { tone: 'unknown' | 'local' | 'cloud' | 'mem'; label: string } {
+    const normalized = transport.toLowerCase();
+    if (normalized.includes('mem fallback') || normalized.includes('in-memory fallback')) {
+      return { tone: 'mem', label: 'source: mem fallback' };
+    }
+    if (normalized.includes('surrealdb')) {
+      return { tone: 'local', label: 'source: local db' };
+    }
+
+    return { tone: 'unknown', label: 'source: unknown' };
+  }
+
+  function applySourceBadge(source?: string | null, transport?: string | null) {
+    const normalizedSource = (source ?? '').trim().toLowerCase();
+    const normalizedTransport = (transport ?? '').trim();
+
+    if (normalizedSource === 'cloud-gateway') {
+      sourceBadgeTone = 'cloud';
+      sourceBadgeLabel = 'source: cloud';
+    } else if (normalizedSource === 'fallback-cache') {
+      sourceBadgeTone = 'mem';
+      sourceBadgeLabel = 'source: cache fallback';
+    } else if (normalizedSource === 'surrealdb-mem') {
+      sourceBadgeTone = 'mem';
+      sourceBadgeLabel = 'source: mem fallback';
+    } else if (normalizedSource === 'surrealdb-local') {
+      sourceBadgeTone = 'local';
+      sourceBadgeLabel = 'source: local db';
+    } else if (normalizedTransport) {
+      const inferred = sourceFromTransport(normalizedTransport);
+      sourceBadgeTone = inferred.tone;
+      sourceBadgeLabel = inferred.label;
+    } else {
+      sourceBadgeTone = 'unknown';
+      sourceBadgeLabel = 'source: unknown';
+    }
+
+    sourceBadgeTitle = `read path: ${source ?? 'n/a'} · transport: ${transport ?? 'n/a'}`;
+  }
+
   async function checkHealth() {
-    try { await resonantiaClient.getHealth(); healthy = true; }
+    try {
+      const health: HealthResponse = await resonantiaClient.getHealth();
+      healthy = true;
+      lastTransportLabel = health.transport;
+      if (sourceBadgeTone === 'unknown' || sourceBadgeLabel === 'source: pending') {
+        applySourceBadge(undefined, health.transport);
+      }
+    }
     catch { healthy = false; }
   }
 
@@ -1563,11 +1626,28 @@
 
   // ── Compose ──────────────────────────────────────────────────
   let composeOpen     = false;
-  let composeText     = '';
+  let composeModeMenuOpen = false;
+  let composeMode: 'live' | 'importare' = 'live';
+  let composeDraft    = '';
+  type ComposeMessage = {
+    role: 'user' | 'assistant';
+    content: string;
+    at: string;
+  };
+  let composeMessages: ComposeMessage[] = [];
   let composeSessionId = '';
   let composeLoading  = false;
+  let composeReplyLoading = false;
+  let composeEncodePromptSent = false;
   let composeError: string | null = null;
   let composeResult: { psi: number; duplicateSkipped: boolean; status: 'created' | 'updated' | 'duplicate' | 'skipped' } | null = null;
+  let composePromptCopyLoading = false;
+  let composePromptCopied = false;
+  let composePromptCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  let composePromptCopyError: string | null = null;
+  let composePasteNodeOpen = false;
+  let composePasteNodeDraft = '';
+  let composePasteNodeLoading = false;
   let syncPullLoading = false;
   let syncPullError: string | null = null;
   let syncPullResult: SyncNowResponse | null = null;
@@ -2139,10 +2219,179 @@
     }, 1)}); box-shadow: 0 0 18px ${avecColor(avec, 0.24)};`;
   }
 
-  function openCompose() {
+  function openCompose(mode: 'live' | 'importare' = 'live') {
+    composeModeMenuOpen = false;
+    composeMode = mode;
     composeSessionId = selectedSession?.label ?? '';
-    composeError = null; composeResult = null;
+    composeDraft = '';
+    composeMessages = [];
+    composeError = null;
+    composeResult = null;
+    composeLoading = false;
+    composeReplyLoading = false;
+    composeEncodePromptSent = false;
+    composePromptCopyLoading = false;
+    clearComposePromptCopiedTimer();
+    composePromptCopied = false;
+    composePromptCopyError = null;
+    composePasteNodeOpen = mode === 'importare';
+    composePasteNodeDraft = '';
+    composePasteNodeLoading = false;
     composeOpen = true;
+  }
+
+  function toggleComposeModeMenu() {
+    composeModeMenuOpen = !composeModeMenuOpen;
+  }
+
+  function openComposeLive() {
+    composeModeMenuOpen = false;
+    openCompose('live');
+  }
+
+  function openComposeImportare() {
+    composeModeMenuOpen = false;
+    openCompose('importare');
+  }
+
+  function switchComposeToLive() {
+    composeMode = 'live';
+    composePasteNodeOpen = false;
+    composePasteNodeDraft = '';
+  }
+
+  function clearComposeConversation() {
+    composeDraft = '';
+    composeMessages = [];
+    composeError = null;
+    composeResult = null;
+    composeEncodePromptSent = false;
+    clearComposePromptCopiedTimer();
+    composePromptCopied = false;
+    composePromptCopyError = null;
+    composePasteNodeOpen = false;
+    composePasteNodeDraft = '';
+  }
+
+  function clearComposePromptCopiedTimer() {
+    if (composePromptCopiedTimer !== null) {
+      clearTimeout(composePromptCopiedTimer);
+      composePromptCopiedTimer = null;
+    }
+  }
+
+  function composeApiMessages(messages: ComposeMessage[]): ChatMessage[] {
+    return messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+  }
+
+  async function copyTextToClipboard(text: string) {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    if (typeof document === 'undefined') {
+      throw new Error('clipboard unavailable in this environment');
+    }
+
+    const bridge = document.createElement('textarea');
+    bridge.value = text;
+    bridge.setAttribute('readonly', '');
+    bridge.style.position = 'fixed';
+    bridge.style.opacity = '0';
+    bridge.style.pointerEvents = 'none';
+    document.body.appendChild(bridge);
+    bridge.focus();
+    bridge.select();
+
+    const copied = document.execCommand('copy');
+    document.body.removeChild(bridge);
+
+    if (!copied) {
+      throw new Error('copy command failed');
+    }
+  }
+
+  async function copyComposeEncodePrompt() {
+    if (composePromptCopyLoading) {
+      return;
+    }
+
+    composePromptCopyLoading = true;
+    clearComposePromptCopiedTimer();
+    composePromptCopied = false;
+    composePromptCopyError = null;
+
+    try {
+      // Keep distill prompt copy aligned to the exact encode preamble source.
+      const prompt = await resonantiaClient.getComposeEncodePreamble();
+      await copyTextToClipboard(prompt);
+      composePromptCopied = true;
+      composePromptCopiedTimer = setTimeout(() => {
+        composePromptCopied = false;
+        composePromptCopiedTimer = null;
+      }, 2200);
+    } catch (err) {
+      composePromptCopied = false;
+      composePromptCopyError = String(err);
+    } finally {
+      composePromptCopyLoading = false;
+    }
+  }
+
+  function toggleComposePasteNode() {
+    composePasteNodeOpen = !composePasteNodeOpen;
+    if (!composePasteNodeOpen) {
+      composePasteNodeDraft = '';
+    }
+  }
+
+  async function sendComposeMessage() {
+    const text = composeDraft.trim();
+    if (!text || composeReplyLoading || composeLoading) {
+      return;
+    }
+
+    composeError = null;
+    composeResult = null;
+
+    const nextMessages: ComposeMessage[] = [
+      ...composeMessages,
+      {
+        role: 'user',
+        content: text,
+        at: new Date().toISOString(),
+      },
+    ];
+
+    composeMessages = nextMessages;
+    composeDraft = '';
+    composeReplyLoading = true;
+
+    try {
+      const reply = await resonantiaClient.chatCompose({
+        sessionId: composeSessionId.trim() || 'resonantia-local',
+        messages: composeApiMessages(nextMessages),
+      });
+
+      if (reply?.trim()) {
+        composeMessages = [
+          ...nextMessages,
+          {
+            role: 'assistant',
+            content: reply.trim(),
+            at: new Date().toISOString(),
+          },
+        ];
+      }
+    } catch (err) {
+      composeError = String(err);
+    } finally {
+      composeReplyLoading = false;
+    }
   }
 
   function composeOutcomeLabel(status: 'created' | 'updated' | 'duplicate' | 'skipped', duplicateSkipped: boolean) {
@@ -2153,6 +2402,45 @@
       return 'updated';
     }
     return 'stored';
+  }
+
+  async function saveComposePastedNode() {
+    const rawNode = composePasteNodeDraft.trim();
+    if (!rawNode || composePasteNodeLoading || composeLoading || composeReplyLoading) {
+      return;
+    }
+
+    composePasteNodeLoading = true;
+    composeError = null;
+    composeResult = null;
+
+    try {
+      const sessionId = composeSessionId.trim() || 'resonantia-local';
+      const res = await resonantiaClient.storeContext({
+        node: rawNode,
+        sessionId,
+      });
+
+      if (!res.valid) {
+        composeError = res.validationError ?? 'store rejected by local policy';
+        return;
+      }
+
+      const status = res.upsertStatus ?? (res.duplicateSkipped ? 'duplicate' : 'created');
+      composeResult = {
+        psi: res.psi,
+        duplicateSkipped: Boolean(res.duplicateSkipped),
+        status,
+      };
+
+      composePasteNodeDraft = '';
+      composePasteNodeOpen = false;
+      await loadGraph();
+    } catch (err) {
+      composeError = String(err);
+    } finally {
+      composePasteNodeLoading = false;
+    }
   }
 
   async function runSyncPull() {
@@ -2179,15 +2467,47 @@
   }
 
   async function submitCompose() {
-    if (!composeText.trim()) return;
-    composeLoading = true; composeError = null; composeResult = null;
+    if (composeMessages.length === 0 || composeReplyLoading) return;
+    composeLoading = true; composeError = null; composeResult = null; composeEncodePromptSent = false;
     try {
-      const res: StoreContextResponse = await resonantiaClient.storeContext({
-        node: composeText,
-        sessionId: composeSessionId,
-      });
-      if (!res.valid) {
-        composeError = res.validationError ?? 'store rejected by local policy';
+      const sessionId = composeSessionId.trim() || 'resonantia-local';
+      const messages = composeApiMessages(composeMessages);
+      const maxEncodeAttempts = 2;
+      let parserErrorHint: string | undefined;
+      let previousNodeCandidate: string | undefined;
+      let res: StoreContextResponse | null = null;
+
+      for (let attempt = 0; attempt < maxEncodeAttempts; attempt += 1) {
+        composeEncodePromptSent = true;
+        const encodedNode = await resonantiaClient.encodeCompose({
+          sessionId,
+          messages,
+          parserErrorHint,
+          previousNodeCandidate,
+        });
+
+        res = await resonantiaClient.storeContext({
+          node: encodedNode,
+          sessionId,
+        });
+
+        if (res.valid) {
+          break;
+        }
+
+        const validationError = (res.validationError ?? '').trim();
+        const retryableParseError = /ParseFailure|MissingLayer|missing required layer|missing layer/i.test(validationError);
+        if (!retryableParseError || attempt >= maxEncodeAttempts - 1) {
+          composeError = validationError || 'store rejected by local policy';
+          return;
+        }
+
+        parserErrorHint = validationError;
+        previousNodeCandidate = encodedNode;
+      }
+
+      if (!res || !res.valid) {
+        composeError = res?.validationError ?? 'store rejected by local policy';
         return;
       }
 
@@ -2197,10 +2517,11 @@
         duplicateSkipped: Boolean(res.duplicateSkipped),
         status,
       };
-      composeText = '';
+      composeDraft = '';
+      composeMessages = [];
       await loadGraph();
     } catch (err) { composeError = String(err); }
-    finally      { composeLoading = false; }
+    finally      { composeLoading = false; composeEncodePromptSent = false; }
   }
 
   // ── Calibrate ───────────────────────────────────────────────
@@ -2311,6 +2632,7 @@
   onDestroy(() => {
     cancelAnimationFrame(raf);
     clearSyncDetailTimer();
+    clearComposePromptCopiedTimer();
   });
 </script>
 
@@ -2338,6 +2660,14 @@
     </div>
     <div class="nav-right">
       <span class="status-dot" class:healthy></span>
+      <span
+        class="source-dot"
+        class:local={sourceBadgeTone === 'local'}
+        class:cloud={sourceBadgeTone === 'cloud'}
+        class:mem={sourceBadgeTone === 'mem'}
+        title={sourceBadgeTitle}
+        aria-label={sourceBadgeLabel}
+      ></span>
       <div
         class="sync-cloud-wrap"
         role="group"
@@ -2434,7 +2764,15 @@
     on:transmute={transmuteCurrentNode}
   />
 
-  <button class="compose-btn" class:faded={telescopeCameraEngaged} on:click={openCompose}>+ compose</button>
+  <div class="compose-launch" class:faded={telescopeCameraEngaged} class:hidden={composeOpen}>
+    {#if composeModeMenuOpen}
+      <div class="compose-launch-popover" role="menu" aria-label="compose options">
+        <button class="compose-launch-item" on:click={openComposeLive}>create live</button>
+        <button class="compose-launch-item" on:click={openComposeImportare}>importare</button>
+      </div>
+    {/if}
+    <button class="compose-btn" class:open={composeModeMenuOpen} on:click={toggleComposeModeMenu}>+ compose</button>
+  </div>
 
   <div class="telescope-shell" aria-label="timeline telescope">
     <button
@@ -2573,24 +2911,119 @@
   </div>
 
   {#if composeOpen}
-    <div class="drawer drawer-compose" role="dialog" aria-label="Compose context">
+    <div class="drawer drawer-compose" class:importare={composeMode === 'importare'} role="dialog" aria-label={composeMode === 'importare' ? 'Import node' : 'Compose context'}>
       <div class="drawer-header">
-        <span class="drawer-title">compose</span>
+        <span class="drawer-title">{composeMode === 'importare' ? 'importare' : 'compose'}</span>
         <button class="close-btn" on:click={() => (composeOpen = false)}>✕</button>
       </div>
       <input class="drawer-input" type="text" placeholder="session id" bind:value={composeSessionId} />
-      <textarea class="drawer-textarea" placeholder="what happened…" bind:value={composeText} rows="6"></textarea>
+      {#if composeMode === 'live'}
+        <div class="compose-thread" aria-live="polite">
+          {#if composeMessages.length === 0}
+            <p class="compose-empty">chat first, then encode the thread into one protocol node.</p>
+          {:else}
+            {#each composeMessages as message}
+              <article class={`compose-bubble ${message.role === 'assistant' ? 'assistant' : 'user'}`}>
+                <header class="compose-bubble-meta">
+                  <span>{message.role === 'assistant' ? 'resonare' : 'you'}</span>
+                  <small>{formatTimestamp(message.at)}</small>
+                </header>
+                <p>{message.content}</p>
+              </article>
+            {/each}
+          {/if}
+
+          {#if composeReplyLoading}
+            <article class="compose-bubble assistant compose-pending">
+              <header class="compose-bubble-meta">
+                <span>resonare</span>
+                <small>thinking…</small>
+              </header>
+            </article>
+          {/if}
+        </div>
+
+        <div class="compose-entry">
+          <textarea
+            class="drawer-textarea compose-input"
+            placeholder="message…"
+            bind:value={composeDraft}
+            rows="3"
+            on:keydown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void sendComposeMessage();
+              }
+            }}
+          ></textarea>
+          <button
+            class="drawer-btn submit compose-send"
+            on:click={sendComposeMessage}
+            disabled={composeLoading || composeReplyLoading || !composeDraft.trim()}
+          >
+            {composeReplyLoading ? 'thinking…' : 'send'}
+          </button>
+        </div>
+      {:else}
+        <p class="compose-importare-note">paste one complete node and store it directly.</p>
+      {/if}
+
+      <div class="compose-utility-actions">
+        <button class="compose-link-btn" on:click={copyComposeEncodePrompt} disabled={composePromptCopyLoading || composeLoading || composeReplyLoading}>
+          {composePromptCopyLoading ? 'copying distill prompt…' : composePromptCopied ? 'distill prompt copied' : 'copy distill prompt'}
+        </button>
+        {#if composeMode === 'live'}
+          <span class="compose-utility-divider">•</span>
+          <button class="compose-link-btn" on:click={toggleComposePasteNode} disabled={composePasteNodeLoading || composeLoading || composeReplyLoading}>
+            {composePasteNodeOpen ? 'hide paste save' : 'paste node to save'}
+          </button>
+          {#if composeMessages.length > 0}
+            <span class="compose-utility-divider">•</span>
+            <button class="compose-link-btn" on:click={clearComposeConversation} disabled={composeLoading || composeReplyLoading}>clear thread</button>
+          {/if}
+        {:else}
+          <span class="compose-utility-divider">•</span>
+          <button class="compose-link-btn" on:click={switchComposeToLive} disabled={composePasteNodeLoading}>switch to create live</button>
+        {/if}
+      </div>
+      {#if composePromptCopyError}
+        <p class="drawer-error">copy failed: {composePromptCopyError}</p>
+      {/if}
+      {#if composeMode === 'importare' || composePasteNodeOpen}
+        <div class="compose-paste-panel">
+          <p class="compose-paste-intro">paste a complete STTP node and save it directly.</p>
+          <textarea
+            class="drawer-textarea compose-paste-input"
+            placeholder="paste one full STTP node"
+            bind:value={composePasteNodeDraft}
+            rows="9"
+          ></textarea>
+          <div class="compose-paste-actions">
+            {#if composeMode === 'live'}
+              <button class="drawer-btn cancel" on:click={toggleComposePasteNode} disabled={composePasteNodeLoading}>cancel paste</button>
+            {/if}
+            <button class="drawer-btn submit" on:click={saveComposePastedNode} disabled={composePasteNodeLoading || !composePasteNodeDraft.trim()}>
+              {composePasteNodeLoading ? 'saving…' : 'save pasted node'}
+            </button>
+          </div>
+        </div>
+      {/if}
+      {#if composeMode === 'live' && composeLoading && composeEncodePromptSent}
+        <p class="drawer-success compose-encode-note">encoding prompt sent</p>
+      {/if}
       {#if composeError}<p class="drawer-error">{composeError}</p>{/if}
       {#if composeResult}
         <p class="drawer-success">
           {composeOutcomeLabel(composeResult.status, composeResult.duplicateSkipped)} · Ψ {composeResult.psi.toFixed(4)}
         </p>
       {/if}
-      <div class="drawer-actions">
-        <button class="drawer-btn cancel" on:click={() => (composeOpen = false)}>cancel</button>
-        <button class="drawer-btn submit" on:click={submitCompose} disabled={composeLoading}>
-          {composeLoading ? 'storing…' : 'store'}
-        </button>
+      <div class="drawer-actions compose-actions">
+        <button class="drawer-btn cancel" on:click={() => (composeOpen = false)}>{composeMode === 'importare' ? 'close' : 'cancel'}</button>
+        {#if composeMode === 'live'}
+          <button class="drawer-btn submit" on:click={submitCompose} disabled={composeLoading || composeReplyLoading || composeMessages.length === 0}>
+            {composeLoading ? 'encoding…' : 'encode + store'}
+          </button>
+        {/if}
       </div>
     </div>
   {/if}
@@ -2833,6 +3266,33 @@
     transition: background 0.4s;
   }
   .status-dot.healthy { background: #7aaa7a; }
+
+  .source-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 0.5px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 0 6px rgba(255, 255, 255, 0.18);
+  }
+
+  .source-dot.local {
+    border-color: rgba(91, 155, 213, 0.52);
+    background: rgba(91, 155, 213, 0.9);
+    box-shadow: 0 0 8px rgba(91, 155, 213, 0.42);
+  }
+
+  .source-dot.cloud {
+    border-color: rgba(122, 170, 122, 0.56);
+    background: rgba(122, 170, 122, 0.92);
+    box-shadow: 0 0 8px rgba(122, 170, 122, 0.44);
+  }
+
+  .source-dot.mem {
+    border-color: rgba(233, 148, 58, 0.58);
+    background: rgba(233, 148, 58, 0.94);
+    box-shadow: 0 0 8px rgba(233, 148, 58, 0.46);
+  }
 
   .sync-cloud-wrap {
     position: relative;
@@ -3129,10 +3589,66 @@
   }
 
 
-  .compose-btn {
+  .compose-launch {
     position: absolute;
     bottom: max(24px, calc(var(--safe-bottom) + 12px));
     right: max(24px, calc(var(--safe-right) + 12px));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    z-index: 10;
+    transition: all 0.2s;
+  }
+
+  .compose-launch.faded {
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+  }
+
+  .compose-launch.hidden {
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+  }
+
+  .compose-launch-popover {
+    width: 146px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: rgba(10, 11, 14, 0.95);
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.26);
+  }
+
+  .compose-launch-item {
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: lowercase;
+    text-align: left;
+    color: rgba(255, 255, 255, 0.62);
+    background: transparent;
+    border: 0.5px solid transparent;
+    border-radius: 6px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+  }
+
+  .compose-launch-item:hover {
+    color: rgba(255, 255, 255, 0.86);
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .compose-btn {
     font-family: 'Departure Mono', monospace;
     font-size: 11px;
     letter-spacing: 0.1em;
@@ -3142,7 +3658,6 @@
     border-radius: 6px;
     padding: 10px 18px;
     cursor: pointer;
-    z-index: 10;
     transition: all 0.2s;
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
@@ -3153,10 +3668,10 @@
     background: rgba(20, 23, 32, 0.95);
   }
 
-  .compose-btn.faded {
-    opacity: 0;
-    transform: translateY(8px);
-    pointer-events: none;
+  .compose-btn.open {
+    color: rgba(255, 255, 255, 0.86);
+    border-color: rgba(255, 255, 255, 0.3);
+    background: rgba(20, 23, 32, 0.95);
   }
 
   .telescope-shell {
@@ -3446,11 +3961,196 @@
   .drawer-compose {
     top: max(64px, calc(var(--safe-top) + 46px));
     bottom: auto;
-    max-height: min(560px, calc(100dvh - 168px));
+    max-height: min(680px, calc(100dvh - 150px));
   }
 
-  .drawer-compose .drawer-textarea {
-    min-height: 122px;
+  .drawer-compose.importare {
+    max-height: min(620px, calc(100dvh - 160px));
+  }
+
+  .compose-thread {
+    min-height: 144px;
+    max-height: 290px;
+    overflow-y: auto;
+    border: 0.5px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.018);
+    padding: 9px;
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .compose-empty {
+    margin: auto 0;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.34);
+    letter-spacing: 0.03em;
+  }
+
+  .compose-bubble {
+    border: 0.5px solid rgba(255, 255, 255, 0.065);
+    border-radius: 9px;
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .compose-bubble.user {
+    border-color: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .compose-bubble.assistant {
+    border-color: rgba(214, 184, 109, 0.26);
+    background: rgba(214, 184, 109, 0.08);
+  }
+
+  .compose-bubble-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 5px;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: lowercase;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .compose-bubble-meta small {
+    font-size: 8px;
+    letter-spacing: 0.05em;
+    color: rgba(255, 255, 255, 0.35);
+  }
+
+  .compose-bubble p {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.45;
+    color: rgba(255, 255, 255, 0.76);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .compose-pending {
+    animation: composePulse 1.4s ease-in-out infinite;
+  }
+
+  .compose-entry {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+  }
+
+  .compose-input {
+    margin-bottom: 0;
+    min-height: 84px;
+  }
+
+  .compose-send {
+    min-width: 88px;
+    margin-bottom: 1px;
+  }
+
+  .compose-importare-note {
+    margin: 0 0 8px;
+    font-size: 10px;
+    line-height: 1.45;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.44);
+    text-transform: lowercase;
+  }
+
+  .compose-utility-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 7px;
+    margin-bottom: 2px;
+  }
+
+  .compose-utility-divider {
+    color: rgba(255, 255, 255, 0.18);
+    font-size: 9px;
+    line-height: 1;
+    user-select: none;
+  }
+
+  .compose-link-btn {
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    color: rgba(255, 255, 255, 0.46);
+    cursor: pointer;
+    transition: color 0.2s;
+  }
+
+  .compose-link-btn:hover:not(:disabled) {
+    color: rgba(255, 255, 255, 0.76);
+  }
+
+  .compose-link-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .compose-paste-panel {
+    margin-top: 7px;
+    padding: 10px;
+    border-radius: 10px;
+    border: 0.5px dashed rgba(255, 255, 255, 0.11);
+    background: rgba(255, 255, 255, 0.012);
+  }
+
+  .compose-paste-intro {
+    margin: 0 0 8px;
+    font-size: 9px;
+    line-height: 1.45;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.48);
+    text-transform: lowercase;
+  }
+
+  .compose-paste-input {
+    min-height: 168px;
+    margin-bottom: 0;
+  }
+
+  .drawer-compose.importare .compose-paste-input {
+    min-height: 224px;
+  }
+
+  .compose-paste-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .compose-actions {
+    justify-content: flex-end;
+    align-items: center;
+  }
+
+  .compose-encode-note {
+    margin-top: 8px;
+    opacity: 0.85;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+  }
+
+  @keyframes composePulse {
+    0%,
+    100% { opacity: 0.64; }
+    50% { opacity: 1; }
   }
 
   .drawer-header {
@@ -3827,18 +4527,52 @@
     .drawer-compose {
       top: calc(var(--safe-top) + 56px);
       bottom: auto;
-      max-height: min(52dvh, 420px);
+      max-height: min(74dvh, 560px);
       padding: 14px;
     }
 
-    .drawer-compose .drawer-textarea {
-      min-height: 104px;
+    .compose-thread {
+      max-height: 236px;
+      min-height: 132px;
+    }
+
+    .compose-entry {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+    }
+
+    .compose-send {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .compose-input {
+      min-height: 72px;
+    }
+
+    .compose-utility-actions,
+    .compose-paste-actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .compose-link-btn,
+    .compose-paste-actions .drawer-btn {
+      width: 100%;
+      text-align: left;
+      padding: 1px 0;
+    }
+
+    .compose-utility-divider {
+      display: none;
     }
 
     .profile-grid,
     .guide-options {
       grid-template-columns: 1fr;
     }
+
   }
 
   .drawer-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
