@@ -15,7 +15,9 @@
     "deploy:lan": "npm run build && npm run preview:lan",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "gateway:dev": "cargo run --manifest-path gateway/Cargo.toml",
+    "gateway:check": "cargo check --manifest-path gateway/Cargo.toml"
   },
   "license": "MIT",
   "dependencies": {
