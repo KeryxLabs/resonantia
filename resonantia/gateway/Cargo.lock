@@ -3290,6 +3290,7 @@ dependencies = [
  "resonantia-core",
  "serde",
  "serde_json",
+ "surrealdb",
  "tokio",
  "tower-http",
  "tracing",

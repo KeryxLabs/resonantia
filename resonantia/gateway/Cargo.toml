@@ -12,6 +12,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 resonantia-core = { path = "../src-tauri/resonantia-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+surrealdb = { version = "3", default-features = false, features = ["kv-surrealkv", "kv-mem"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"

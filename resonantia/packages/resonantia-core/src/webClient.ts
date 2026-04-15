@@ -50,7 +50,7 @@ const APP_CONFIG_STORAGE_KEY = "resonantia:app-config:v1";
 const NODE_CACHE_STORAGE_KEY = "resonantia:nodes-cache:v1";
 const NODE_CACHE_LIMIT = 1200;
 
-const DEFAULT_GATEWAY_BASE_URL = "";
+const DEFAULT_GATEWAY_BASE_URL = (import.meta.env.VITE_GATEWAY_BASE_URL ?? '').trim();
 const DEFAULT_GATEWAY_AUTH_TOKEN = "";
 const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL = "gemma3";

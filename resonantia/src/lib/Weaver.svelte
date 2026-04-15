@@ -11,6 +11,7 @@
   import SettingsDrawer from './components/SettingsDrawer.svelte';
   import WalkthroughGuide from './components/WalkthroughGuide.svelte';
   import AdventureOnboarding from './components/AdventureOnboarding.svelte';
+  import { getCloudAuthStatus, getGatewayAuthToken, signOutCloud, startCloudSignIn, getCloudAccount } from './cloudAuth';
   import { resonantiaClient } from './resonantiaClient';
   import type {
     AiSummary,
@@ -2018,7 +2019,14 @@
   let ollamaModel = '';
   let gatewayBaseUrl = '';
   let gatewayAuthToken = '';
-  let syncAdvancedOpen = false;
+  let cloudAuthAvailable = false;
+  let cloudAuthSignedIn = false;
+  let cloudAuthBusy = false;
+  let cloudAuthStatus = 'cloud account disconnected';
+  let cloudAuthError: string | null = null;
+  let cloudAccountTier: string | null = null;
+  let cloudAccountMemberSince: string | null = null;
+  let advancedOpen = false;
   let localModelOriginWarning: string | null = null;
 
   function isLoopbackHostName(hostname: string) {
@@ -2066,11 +2074,117 @@
       gatewayAuthToken = config.gatewayAuthToken ?? '';
       ollamaBaseUrl = config.ollamaBaseUrl;
       ollamaModel = config.ollamaModel;
-      syncAdvancedOpen = false;
+      advancedOpen = false;
+      await refreshCloudAuthState();
     } catch (err) {
       settingsError = String(err);
     } finally {
       settingsLoading = false;
+    }
+  }
+
+  async function refreshCloudAuthState() {
+    try {
+      cloudAuthError = null;
+      const status = await getCloudAuthStatus();
+      cloudAuthAvailable = status.available;
+      cloudAuthSignedIn = status.signedIn;
+
+      if (!status.available) {
+        cloudAuthStatus = 'cloud connect is not enabled in this build';
+        return;
+      }
+
+      if (status.signedIn) {
+        const marker = status.userId ? ` · ${status.userId.slice(0, 8)}` : '';
+        cloudAuthStatus = `cloud account connected${marker}`;
+        const account = await getCloudAccount(gatewayBaseUrl, gatewayAuthToken).catch(() => null);
+        cloudAccountTier = account?.tier ?? null;
+        cloudAccountMemberSince = account?.memberSince ?? null;
+      } else {
+        cloudAuthStatus = 'cloud account disconnected';
+        cloudAccountTier = null;
+        cloudAccountMemberSince = null;
+      }
+    } catch (err) {
+      cloudAuthAvailable = false;
+      cloudAuthSignedIn = false;
+      cloudAuthStatus = 'cloud auth unavailable';
+      cloudAuthError = String(err);
+    }
+  }
+
+  async function connectCloudAccount() {
+    if (cloudAuthBusy) {
+      return;
+    }
+
+    cloudAuthBusy = true;
+    cloudAuthError = null;
+    try {
+      await startCloudSignIn();
+      await refreshCloudAuthState();
+    } catch (err) {
+      cloudAuthError = String(err);
+    } finally {
+      cloudAuthBusy = false;
+    }
+  }
+
+  async function refreshGatewayAuthToken() {
+    if (cloudAuthBusy) {
+      return;
+    }
+
+    cloudAuthBusy = true;
+    cloudAuthError = null;
+    settingsSaved = false;
+    try {
+      const token = await getGatewayAuthToken();
+      gatewayAuthToken = token;
+      await resonantiaClient.setGatewayAuthToken(token);
+      await refreshCloudAuthState();
+      settingsSaved = true;
+    } catch (err) {
+      cloudAuthError = String(err);
+    } finally {
+      cloudAuthBusy = false;
+    }
+  }
+
+  async function refreshGatewayAuthTokenForSync() {
+    const status = await getCloudAuthStatus();
+    if (!status.available || !status.signedIn) {
+      return;
+    }
+
+    const token = await getGatewayAuthToken();
+    if (!token || token === gatewayAuthToken) {
+      return;
+    }
+
+    gatewayAuthToken = token;
+    await resonantiaClient.setGatewayAuthToken(token);
+  }
+
+  async function clearGatewayAuthToken() {
+    if (cloudAuthBusy) {
+      return;
+    }
+
+    cloudAuthBusy = true;
+    cloudAuthError = null;
+    settingsSaved = false;
+    try {
+      gatewayAuthToken = '';
+      await resonantiaClient.setGatewayAuthToken('');
+      await signOutCloud();
+      await refreshCloudAuthState();
+      settingsSaved = true;
+    } catch (err) {
+      cloudAuthError = String(err);
+    } finally {
+      cloudAuthBusy = false;
     }
   }
 
@@ -2936,6 +3050,12 @@
     clearSyncDetailTimer();
 
     try {
+      try {
+        await refreshGatewayAuthTokenForSync();
+      } catch (tokenError) {
+        cloudAuthError = String(tokenError);
+      }
+
       syncPullResult = await resonantiaClient.syncNow({ pageSize: 200 });
       await loadGraph();
     } catch (err) {
@@ -3458,6 +3578,7 @@
         detailSubtitle={syncDetailSubtitle}
         pullResult={syncPullResult}
         pullError={syncPullError}
+        accountTier={cloudAccountTier}
         openSyncDetailHover={openSyncDetailHover}
         closeSyncDetailHover={closeSyncDetailHover}
         runSyncPull={runSyncPull}
@@ -3610,10 +3731,20 @@
     bind:ollamaModel
     bind:gatewayBaseUrl
     bind:gatewayAuthToken
-    bind:syncAdvancedOpen
+    cloudAuthAvailable={cloudAuthAvailable}
+    cloudAuthSignedIn={cloudAuthSignedIn}
+    cloudAuthBusy={cloudAuthBusy}
+    cloudAuthStatus={cloudAuthStatus}
+    cloudAuthError={cloudAuthError}
+    accountTier={cloudAccountTier}
+    accountMemberSince={cloudAccountMemberSince}
+    bind:advancedOpen
     on:close={() => (settingsOpen = false)}
     on:save={saveSettings}
     on:demo={openOnboardingTutorial}
+    on:connectCloud={connectCloudAccount}
+    on:refreshCloudToken={refreshGatewayAuthToken}
+    on:clearCloudToken={clearGatewayAuthToken}
   />
 </div>
 

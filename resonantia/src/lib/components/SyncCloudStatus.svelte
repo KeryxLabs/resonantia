@@ -10,6 +10,7 @@
   export let detailSubtitle = '';
   export let pullResult: SyncNowResponse | null = null;
   export let pullError: string | null = null;
+  export let accountTier: string | null = null;
   export let openSyncDetailHover: () => void = () => {};
   export let closeSyncDetailHover: () => void = () => {};
   export let runSyncPull: () => void | Promise<void> = () => {};
@@ -74,6 +75,11 @@
         <p class="sync-detail-error">{detailSubtitle}</p>
       {:else if visualState === 'syncing'}
         <p class="sync-detail-note">{detailSubtitle}</p>
+      {/if}
+      {#if accountTier}
+        <div class="sync-tier-footer">
+          <span class="sync-tier-badge" class:subscriber={accountTier === 'subscriber'}>{accountTier} plan</span>
+        </div>
       {/if}
     </div>
   {/if}
@@ -291,6 +297,30 @@
 
   .sync-detail-error {
     color: rgba(255, 200, 197, 0.92);
+  }
+
+  .sync-tier-footer {
+    margin-top: 6px;
+    padding-top: 5px;
+    border-top: 0.5px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .sync-tier-badge {
+    font-family: 'Departure Mono', monospace;
+    font-size: 7px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 2px 5px;
+    border-radius: 3px;
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.42);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .sync-tier-badge.subscriber {
+    border-color: rgba(147, 230, 187, 0.28);
+    color: rgba(191, 245, 216, 0.78);
+    background: rgba(82, 171, 125, 0.09);
   }
 
   @keyframes sync-cloud-spin {

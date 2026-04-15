@@ -11,12 +11,31 @@
   export let ollamaModel = '';
   export let gatewayBaseUrl = '';
   export let gatewayAuthToken = '';
-  export let syncAdvancedOpen = false;
+  export let cloudAuthAvailable = false;
+  export let cloudAuthSignedIn = false;
+  export let cloudAuthBusy = false;
+  export let cloudAuthStatus = 'cloud account disconnected';
+  export let cloudAuthError: string | null = null;
+  export let advancedOpen = false;
+  export let accountTier: string | null = null;
+  export let accountMemberSince: string | null = null;
+  let showTechnicalTokenField = false;
+
+  function formatMemberSince(iso: string): string {
+    try {
+      return new Date(iso).toLocaleDateString([], { month: 'short', year: 'numeric' });
+    } catch {
+      return '';
+    }
+  }
 
   const dispatch = createEventDispatcher<{
     close: void;
     save: void;
     demo: void;
+    connectCloud: void;
+    refreshCloudToken: void;
+    clearCloudToken: void;
   }>();
 </script>
 
@@ -26,66 +45,136 @@
       <span class="drawer-title">settings</span>
       <button class="close-btn" on:click={() => dispatch('close')}>✕</button>
     </div>
-    <p class="settings-intro">Resonantia runs local-first. Model settings live here, and cloud sync can be linked once in advanced settings.</p>
+
+    <!-- ── Resonantia Account (normie primary) ── -->
+    <div class="settings-section">
+      <span class="settings-section-label">resonantia account</span>
+      {#if !cloudAuthAvailable}
+        <p class="settings-note">cloud sync is not available in this build.</p>
+      {:else if cloudAuthSignedIn}
+        <p class="settings-note settings-account-connected">{cloudAuthStatus}</p>
+        {#if accountTier || accountMemberSince}
+          <div class="account-meta">
+            {#if accountTier}
+              <span class="account-tier-badge" class:subscriber={accountTier === 'subscriber'}>{accountTier} plan</span>
+            {/if}
+            {#if accountMemberSince}
+              <span class="account-since">since {formatMemberSince(accountMemberSince)}</span>
+            {/if}
+          </div>
+        {/if}
+        {#if cloudAuthError}
+          <p class="drawer-error settings-inline-warning">{cloudAuthError}</p>
+        {/if}
+        <div class="cloud-auth-actions">
+          <button
+            class="drawer-btn cancel"
+            type="button"
+            on:click={() => dispatch('clearCloudToken')}
+            disabled={loading || saving || cloudAuthBusy}
+          >
+            sign out
+          </button>
+          <button
+            class="drawer-btn"
+            type="button"
+            on:click={() => dispatch('connectCloud')}
+            disabled={loading || saving || cloudAuthBusy}
+          >
+            switch account
+          </button>
+        </div>
+      {:else}
+        <p class="settings-account-tagline">sync your conversations across devices and keep them backed up.</p>
+        {#if cloudAuthError}
+          <p class="drawer-error settings-inline-warning">{cloudAuthError}</p>
+        {/if}
+        <button
+          class="drawer-btn submit settings-account-cta"
+          type="button"
+          on:click={() => dispatch('connectCloud')}
+          disabled={loading || saving || cloudAuthBusy}
+        >
+          {cloudAuthBusy ? 'connecting…' : 'sign in to resonantia'}
+        </button>
+      {/if}
+    </div>
+
+    <!-- ── Advanced settings ── -->
     <button
       class="settings-advanced-toggle"
-      on:click={() => dispatch('demo')}
+      on:click={() => (advancedOpen = !advancedOpen)}
       disabled={loading || saving}
     >
-      run cinematic demo
+      {advancedOpen ? '▴ hide advanced settings' : '▾ advanced settings'}
     </button>
 
-    <label class="settings-field">
-      <span class="settings-label">ollama base url</span>
-      <span class="settings-note">Local model endpoint for transmutation and summaries</span>
-      <input class="drawer-input" type="text" placeholder="http://127.0.0.1:11434" bind:value={ollamaBaseUrl} disabled={loading || saving} />
-    </label>
-    {#if localModelOriginWarning}
-      <p class="drawer-error settings-inline-warning">{localModelOriginWarning}</p>
-    {/if}
-
-    <label class="settings-field">
-      <span class="settings-label">ollama model</span>
-      <span class="settings-note">Model name Resonantia should call by default</span>
-      <input class="drawer-input" type="text" placeholder="llama3.2" bind:value={ollamaModel} disabled={loading || saving} />
-    </label>
-
-    <button
-      class="settings-advanced-toggle"
-      on:click={() => (syncAdvancedOpen = !syncAdvancedOpen)}
-      disabled={loading || saving}
-    >
-      {syncAdvancedOpen ? 'hide advanced sync' : 'advanced sync'}
-    </button>
-
-    {#if syncAdvancedOpen}
+    {#if advancedOpen}
       <div class="settings-advanced-panel">
+        <span class="settings-subsection-label">ai model</span>
+
         <label class="settings-field">
-          <span class="settings-label">cloud sync path</span>
-          <span class="settings-note">Set this once, then just use Sync from the menu.</span>
+          <span class="settings-label">server address</span>
+          <span class="settings-note">Only change this if your AI model runs somewhere other than the default local setup.</span>
+          <input class="drawer-input" type="text" placeholder="http://127.0.0.1:11434" bind:value={ollamaBaseUrl} disabled={loading || saving} />
+        </label>
+        {#if localModelOriginWarning}
+          <p class="drawer-error settings-inline-warning">{localModelOriginWarning}</p>
+        {/if}
+
+        <label class="settings-field">
+          <span class="settings-label">model name</span>
+          <span class="settings-note">Example: gemma3, llama3.2, mistral. Use the model available on your AI server.</span>
+          <input class="drawer-input" type="text" placeholder="llama3.2" bind:value={ollamaModel} disabled={loading || saving} />
+        </label>
+
+        <span class="settings-subsection-label">bring your own cloud</span>
+        <p class="settings-note settings-byoc-intro">Only set this if you self-host a Resonantia gateway. Leave blank to use the hosted service.</p>
+
+        <label class="settings-field">
+          <span class="settings-label">gateway url</span>
           <input
             class="drawer-input"
             type="text"
-            placeholder="https://your-sync-endpoint"
+            placeholder="https://your-gateway.example.com"
             bind:value={gatewayBaseUrl}
             disabled={loading || saving}
           />
         </label>
 
-        <label class="settings-field">
-          <span class="settings-label">cloud auth bearer</span>
-          <span class="settings-note">Optional for local/self-hosted. Required when gateway runs in Clerk auth mode.</span>
-          <input
-            class="drawer-input"
-            type="password"
-            placeholder="paste clerk session jwt"
-            bind:value={gatewayAuthToken}
-            disabled={loading || saving}
-            autocomplete="off"
-          />
-        </label>
+        <button
+          class="settings-advanced-toggle technical-toggle"
+          type="button"
+          on:click={() => (showTechnicalTokenField = !showTechnicalTokenField)}
+          disabled={loading || saving}
+        >
+          {showTechnicalTokenField ? 'hide auth token' : 'manual auth token'}
+        </button>
+
+        {#if showTechnicalTokenField}
+          <label class="settings-field">
+            <span class="settings-label">auth token</span>
+            <span class="settings-note">Set automatically after sign in. Only paste manually if instructed.</span>
+            <input
+              class="drawer-input"
+              type="password"
+              placeholder="paste session jwt"
+              bind:value={gatewayAuthToken}
+              disabled={loading || saving}
+              autocomplete="off"
+            />
+          </label>
+        {/if}
       </div>
     {/if}
+
+    <button
+      class="settings-advanced-toggle"
+      on:click={() => dispatch('demo')}
+      disabled={loading || saving}
+    >
+      run guided demo
+    </button>
 
     {#if loading}<p class="drawer-success">loading config…</p>{/if}
     {#if error}<p class="drawer-error">{error}</p>{/if}
@@ -169,13 +258,6 @@
     border-color: rgba(255, 255, 255, 0.25);
   }
 
-  .settings-intro {
-    margin: -2px 0 10px;
-    font-size: 10px;
-    line-height: 1.5;
-    color: rgba(255, 255, 255, 0.45);
-  }
-
   .settings-field {
     display: grid;
     gap: 4px;
@@ -246,6 +328,97 @@
     justify-content: flex-end;
     gap: 8px;
     margin-top: 12px;
+  }
+
+  .cloud-auth-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+    margin-bottom: 8px;
+  }
+
+  .settings-section {
+    margin-bottom: 12px;
+    padding: 12px;
+    border-radius: 9px;
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .settings-section-label {
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.4);
+    margin-bottom: 8px;
+  }
+
+  .settings-account-tagline {
+    font-size: 10px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.55);
+    margin: 0 0 10px;
+  }
+
+  .settings-account-connected {
+    color: rgba(122, 170, 122, 0.85);
+    margin-top: 2px;
+    margin-bottom: 4px;
+  }
+
+  .account-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .account-tier-badge {
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 0.5px solid rgba(255, 255, 255, 0.14);
+    color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .account-tier-badge.subscriber {
+    border-color: rgba(147, 230, 187, 0.3);
+    color: rgba(191, 245, 216, 0.88);
+    background: rgba(82, 171, 125, 0.1);
+  }
+
+  .account-since {
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    color: rgba(255, 255, 255, 0.35);
+  }
+
+  .settings-account-cta {
+    width: 100%;
+    padding: 9px 14px;
+    font-size: 11px;
+  }
+
+  .settings-subsection-label {
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.35);
+    margin: 12px 0 8px;
+  }
+
+  .settings-subsection-label:first-child {
+    margin-top: 0;
+  }
+
+  .settings-byoc-intro {
+    margin: -4px 0 10px;
   }
 
   .drawer-btn {

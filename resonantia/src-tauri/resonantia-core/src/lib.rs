@@ -21,7 +21,10 @@ use sttp_core_rs::{
 use surrealdb::engine::any::{connect as surreal_connect, Any as SurrealAny};
 use surrealdb::Surreal;
 
-const DEFAULT_GATEWAY_BASE_URL: &str = "";
+const DEFAULT_GATEWAY_BASE_URL: &str = match option_env!("GATEWAY_BASE_URL") {
+    Some(url) => url,
+    None => "",
+};
 const DEFAULT_GATEWAY_AUTH_TOKEN: &str = "";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL: &str = "gemma3";

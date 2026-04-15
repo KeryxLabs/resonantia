@@ -21,6 +21,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@clerk/clerk-js": "^6.7.2",
     "@surrealdb/wasm": "^3.0.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",

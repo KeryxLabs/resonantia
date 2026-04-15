@@ -10,24 +10,136 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use resonantia_core::{
     create_app_state, get_health, get_graph, initialize_app_state, list_nodes, store_context,
     AppState, GraphResponse, HealthResponse, ListNodesResponse, StoreContextRequest,
     StoreContextResponse,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use surrealdb::engine::any::{connect as surreal_connect, Any as SurrealAny};
+use surrealdb::Surreal;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use tokio::sync::RwLock;
 
+// ── Account store ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccountRecord {
+    user_id: String,
+    /// ISO 8601 string — stored as plain string to avoid SurrealDB datetime round-trip issues.
+    created_at: String,
+    tier: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AccountResponse {
+    #[serde(rename = "userId")]
+    user_id: String,
+    tier: String,
+    #[serde(rename = "memberSince")]
+    member_since: String,
+}
+
+struct AccountStore {
+    db: Surreal<SurrealAny>,
+}
+
+impl AccountStore {
+    async fn open(data_root: &PathBuf) -> Result<Self, String> {
+        let accounts_dir = data_root.join("accounts");
+        std::fs::create_dir_all(&accounts_dir)
+            .map_err(|err| format!("failed to create accounts dir: {err}"))?;
+
+        let endpoint = format!("surrealkv://{}", accounts_dir.display());
+        let db: Surreal<SurrealAny> = surreal_connect(&endpoint)
+            .await
+            .map_err(|err| format!("failed to open accounts db: {err}"))?;
+
+        db.use_ns("resonantia")
+            .use_db("accounts")
+            .await
+            .map_err(|err| format!("failed to select accounts namespace: {err}"))?;
+
+        db.query(
+            "DEFINE TABLE IF NOT EXISTS account SCHEMAFULL;\
+             DEFINE FIELD IF NOT EXISTS user_id ON TABLE account TYPE string;\
+             DEFINE FIELD IF NOT EXISTS created_at ON TABLE account TYPE string;\
+             DEFINE FIELD IF NOT EXISTS tier ON TABLE account TYPE string DEFAULT 'free';\
+             DEFINE INDEX IF NOT EXISTS idx_account_user_id ON TABLE account FIELDS user_id UNIQUE;",
+        )
+        .await
+        .map_err(|err| format!("failed to define account schema: {err}"))?;
+
+        Ok(Self { db })
+    }
+
+    async fn update_tier(&self, user_id: &str, tier: &str) -> Result<Option<AccountRecord>, String> {
+        let user_id = user_id.to_string();
+        let tier = tier.to_string();
+        self.db
+            .query("UPDATE account SET tier = $tier WHERE user_id = $user_id")
+            .bind(("user_id", user_id.clone()))
+            .bind(("tier", tier))
+            .await
+            .map_err(|err| format!("failed to update account tier: {err}"))?;
+
+        self.get(&user_id).await
+    }
+
+    /// Insert the user account if it does not already exist. No-op on duplicate.
+    async fn provision(&self, user_id: &str) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .query(
+                "INSERT INTO account { user_id: $user_id, created_at: $now, tier: 'free' } \
+                 ON DUPLICATE KEY UPDATE user_id = user_id",
+            )
+            .bind(("user_id", user_id.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(|err| format!("failed to provision account: {err}"))?;
+        Ok(())
+    }
+
+    async fn get(&self, user_id: &str) -> Result<Option<AccountRecord>, String> {
+        let user_id = user_id.to_string();
+        let mut result = self
+            .db
+            .query("SELECT user_id, created_at, tier FROM account WHERE user_id = $user_id LIMIT 1")
+            .bind(("user_id", user_id))
+            .await
+            .map_err(|err| format!("failed to query account: {err}"))?;
+
+        // SurrealDB v3 — take as serde_json::Value then deserialize.
+        let values: Vec<serde_json::Value> = result
+            .take(0)
+            .map_err(|err| format!("failed to take account results: {err}"))?;
+
+        values
+            .into_iter()
+            .next()
+            .map(|v| {
+                serde_json::from_value::<AccountRecord>(v)
+                    .map_err(|err| format!("failed to deserialize account: {err}"))
+            })
+            .transpose()
+    }
+}
+
+// ── Gateway context ───────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 struct GatewayContext {
     tenant_pool: Arc<TenantPool>,
     auth: Arc<AuthResolver>,
+    accounts: Arc<AccountStore>,
+    admin_secret: Option<String>,
 }
 
 struct TenantPool {
@@ -43,9 +155,16 @@ struct ListNodesQuery {
     session_id: Option<String>,
 }
 
+struct UserContext {
+    tenant_id: String,
+    /// Present only when auth mode is Clerk and JWT was verified.
+    user_id: Option<String>,
+}
+
 #[derive(Clone)]
 struct TenantRequestContext {
     state: Arc<AppState>,
+    user_id: Option<String>,
 }
 
 enum GatewayAuthMode {
@@ -105,6 +224,15 @@ async fn main() {
     let default_tenant = env::var("RESONANTIA_GATEWAY_DEFAULT_TENANT")
         .unwrap_or_else(|_| "public".to_string());
 
+    let accounts = AccountStore::open(&data_root)
+        .await
+        .expect("failed to open account store");
+
+    let admin_secret = env::var("RESONANTIA_GATEWAY_ADMIN_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let context = GatewayContext {
         tenant_pool: Arc::new(TenantPool {
             data_root,
@@ -112,10 +240,14 @@ async fn main() {
             states: RwLock::new(HashMap::new()),
         }),
         auth: Arc::new(AuthResolver::from_env().expect("invalid gateway auth configuration")),
+        accounts: Arc::new(accounts),
+        admin_secret,
     };
 
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/api/v1/account", get(account_handler))
+        .route("/api/v1/account/tier", axum::routing::patch(update_tier_handler))
         .route("/api/v1/store", post(store_handler))
         .route("/api/store", post(store_handler))
         .route("/store", post(store_handler))
@@ -148,6 +280,73 @@ async fn health_handler(
     let tenant = resolve_tenant_context(&context, &headers).await?;
     let response = get_health(&tenant.state).await.map_err(AppError::internal)?;
     Ok(Json(response))
+}
+
+#[derive(Deserialize)]
+struct UpdateTierRequest {
+    user_id: String,
+    tier: String,
+}
+
+fn check_admin_secret(headers: &HeaderMap, secret: &str) -> bool {
+    headers
+        .get("x-admin-secret")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == secret)
+        .unwrap_or(false)
+}
+
+async fn update_tier_handler(
+    State(context): State<GatewayContext>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateTierRequest>,
+) -> Result<Json<AccountResponse>, AppError> {
+    let secret = context.admin_secret.as_deref().unwrap_or("");
+    if secret.is_empty() || !check_admin_secret(&headers, secret) {
+        return Err(AppError::unauthorized("valid x-admin-secret header required".to_string()));
+    }
+
+    if !matches!(request.tier.as_str(), "free" | "subscriber") {
+        return Err(AppError::bad_request(
+            "tier must be 'free' or 'subscriber'".to_string(),
+        ));
+    }
+
+    let record = context
+        .accounts
+        .update_tier(&request.user_id, &request.tier)
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::not_found("account not found".to_string()))?;
+
+    Ok(Json(AccountResponse {
+        user_id: record.user_id,
+        tier: record.tier,
+        member_since: record.created_at,
+    }))
+}
+
+async fn account_handler(
+    State(context): State<GatewayContext>,
+    headers: HeaderMap,
+) -> Result<Json<AccountResponse>, AppError> {
+    let tenant = resolve_tenant_context(&context, &headers).await?;
+    let user_id = tenant.user_id.ok_or_else(|| {
+        AppError::unauthorized("account endpoint requires clerk auth".to_string())
+    })?;
+
+    let record = context
+        .accounts
+        .get(&user_id)
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::internal("account record not found after provisioning".to_string()))?;
+
+    Ok(Json(AccountResponse {
+        user_id: record.user_id,
+        tier: record.tier,
+        member_since: record.created_at,
+    }))
 }
 
 async fn list_nodes_handler(
@@ -198,17 +397,29 @@ async fn resolve_tenant_context(
     context: &GatewayContext,
     headers: &HeaderMap,
 ) -> Result<TenantRequestContext, AppError> {
-    let tenant_id = context
+    let user_ctx = context
         .auth
-        .resolve_tenant_id(headers, &context.tenant_pool.default_tenant)
+        .resolve_user_context(headers, &context.tenant_pool.default_tenant)
         .await?;
+
+    // Auto-provision the account record when we have a real user identity.
+    if let Some(ref user_id) = user_ctx.user_id {
+        if let Err(err) = context.accounts.provision(user_id).await {
+            // Non-fatal: log but don't block the request.
+            error!(%err, "account provisioning failed");
+        }
+    }
+
     let state = context
         .tenant_pool
-        .state_for(&tenant_id)
+        .state_for(&user_ctx.tenant_id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(TenantRequestContext { state })
+    Ok(TenantRequestContext {
+        state,
+        user_id: user_ctx.user_id,
+    })
 }
 
 fn tenant_id_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -334,49 +545,66 @@ impl AuthResolver {
         })
     }
 
-    async fn resolve_tenant_id(
+    async fn resolve_user_context(
         &self,
         headers: &HeaderMap,
         default_tenant: &str,
-    ) -> Result<String, AppError> {
+    ) -> Result<UserContext, AppError> {
         match &self.mode {
-            GatewayAuthMode::Off => Ok(tenant_id_from_headers(headers)
-                .unwrap_or_else(|| sanitize_tenant_id(default_tenant))),
-            GatewayAuthMode::Clerk(clerk) => clerk.resolve_tenant_id(headers).await,
+            GatewayAuthMode::Off => Ok(UserContext {
+                tenant_id: tenant_id_from_headers(headers)
+                    .unwrap_or_else(|| sanitize_tenant_id(default_tenant)),
+                user_id: None,
+            }),
+            GatewayAuthMode::Clerk(clerk) => clerk.resolve_user_context(headers).await,
         }
     }
 }
 
 impl ClerkAuth {
-    async fn resolve_tenant_id(&self, headers: &HeaderMap) -> Result<String, AppError> {
+    async fn resolve_user_context(&self, headers: &HeaderMap) -> Result<UserContext, AppError> {
         let token = bearer_token_from_headers(headers)
             .ok_or_else(|| AppError::unauthorized("missing bearer token".to_string()))?;
 
         let claims = self.verify_token(token).await?;
 
-        if let Some(tenant) = claim_string(&claims, &self.tenant_claim) {
+        // `sub` is always the stable Clerk user ID — use as account identity.
+        let user_id = claim_string(&claims, "sub").ok_or_else(|| {
+            AppError::unauthorized("token missing sub claim".to_string())
+        })?;
+        let sanitized_user_id = sanitize_tenant_id(&user_id);
+
+        // Tenant can be org_id (or the configured claim) for multi-org setups,
+        // falling back to the user's own sub so solo users get their own space.
+        let tenant_id = if let Some(tenant) = claim_string(&claims, &self.tenant_claim) {
             let sanitized = sanitize_tenant_id(&tenant);
             if sanitized != "public" {
-                return Ok(sanitized);
+                sanitized
+            } else {
+                sanitized_user_id.clone()
             }
+        } else {
+            sanitized_user_id.clone()
+        };
+
+        if tenant_id == "public" {
+            if self.allow_tenant_header_fallback {
+                if let Some(header_tenant) = tenant_id_from_headers(headers) {
+                    return Ok(UserContext {
+                        tenant_id: header_tenant,
+                        user_id: Some(sanitized_user_id),
+                    });
+                }
+            }
+            return Err(AppError::unauthorized(
+                "token did not include a usable tenant claim".to_string(),
+            ));
         }
 
-        if let Some(sub) = claim_string(&claims, "sub") {
-            let sanitized = sanitize_tenant_id(&sub);
-            if sanitized != "public" {
-                return Ok(sanitized);
-            }
-        }
-
-        if self.allow_tenant_header_fallback {
-            if let Some(tenant) = tenant_id_from_headers(headers) {
-                return Ok(tenant);
-            }
-        }
-
-        Err(AppError::unauthorized(
-            "token did not include a usable tenant claim".to_string(),
-        ))
+        Ok(UserContext {
+            tenant_id,
+            user_id: Some(sanitized_user_id),
+        })
     }
 
     async fn verify_token(&self, token: &str) -> Result<Value, AppError> {
@@ -605,6 +833,20 @@ impl AppError {
     fn unauthorized(message: String) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
+            message,
+        }
+    }
+
+    fn bad_request(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
+        }
+    }
+
+    fn not_found(message: String) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
             message,
         }
     }

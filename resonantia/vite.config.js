@@ -1,12 +1,10 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 const defaultAllowedHosts = ["localhost", "127.0.0.1", "resonantia.levare.cloud"];
 /** @type {string[]} */
-// @ts-expect-error process is a nodejs global
 const envAllowedHosts = (process.env.VITE_ALLOWED_HOSTS ?? "")
   .split(",")
   .map((/** @type {string} */ value) => value.trim())
