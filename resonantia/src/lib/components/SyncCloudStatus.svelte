@@ -78,7 +78,13 @@
       {/if}
       {#if accountTier}
         <div class="sync-tier-footer">
-          <span class="sync-tier-badge" class:subscriber={accountTier === 'subscriber'}>{accountTier} plan</span>
+          <span
+            class="sync-tier-badge"
+            class:resonant={accountTier === 'resonant'}
+            class:soulful={accountTier === 'soulful'}
+          >
+            {accountTier} plan
+          </span>
         </div>
       {/if}
     </div>
@@ -317,10 +323,16 @@
     background: rgba(255, 255, 255, 0.03);
   }
 
-  .sync-tier-badge.subscriber {
+  .sync-tier-badge.resonant {
     border-color: rgba(147, 230, 187, 0.28);
     color: rgba(191, 245, 216, 0.78);
     background: rgba(82, 171, 125, 0.09);
+  }
+
+  .sync-tier-badge.soulful {
+    border-color: rgba(190, 130, 230, 0.3);
+    color: rgba(225, 196, 252, 0.82);
+    background: rgba(160, 90, 220, 0.11);
   }
 
   @keyframes sync-cloud-spin {

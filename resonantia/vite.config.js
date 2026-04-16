@@ -70,39 +70,61 @@ function readRequestBody(req) {
 
 /** @returns {import("vite").Plugin} */
 function devGatewayProxyPlugin() {
+  const proxyPrefixes = ["/__gateway_proxy__", "/gateway_proxy", "/gateway"];
+  const defaultGatewayUpstream = "http://resonantia-gateway:8060";
+  const gatewayUpstreamRaw = (defaultGatewayUpstream).trim();
+  const gatewayUpstream = gatewayUpstreamRaw.endsWith("/") ? gatewayUpstreamRaw.slice(0, -1) : gatewayUpstreamRaw;
+
+  /**
+   * @param {string} path
+   * @returns {string | null}
+   */
+  const matchProxyPrefix = (path) => {
+    for (const prefix of proxyPrefixes) {
+      if (path === prefix || path.startsWith(`${prefix}/`)) {
+        return prefix;
+      }
+    }
+
+    return null;
+  };
+
   /** @param {import("vite").ViteDevServer | any} server */
   const attachProxyMiddleware = (server) => {
     /** @type {(req: any, res: any) => Promise<void>} */
     const handler = async (req, res) => {
       const inbound = /** @type {any} */ (req);
       const outbound = /** @type {any} */ (res);
-      const requestUrl = new URL(inbound.url ?? "", "http://localhost");
-      const target = requestUrl.searchParams.get("target");
+      const requestUrl = new URL(inbound.url ?? "/", "http://localhost");
+      const path = requestUrl.pathname;
+      const matchedPrefix = matchProxyPrefix(path);
 
-      if (!target) {
-        outbound.statusCode = 400;
+      if (!matchedPrefix) {
+        outbound.statusCode = 404;
         outbound.setHeader("Content-Type", "text/plain; charset=utf-8");
-        outbound.end("gateway proxy requires a target query parameter");
+        outbound.end("gateway proxy route not found");
         return;
       }
 
-      /** @type {URL} */
-      let destination;
+      let upstreamBase;
       try {
-        destination = new URL(target);
+        upstreamBase = new URL(gatewayUpstream);
       } catch {
         outbound.statusCode = 400;
         outbound.setHeader("Content-Type", "text/plain; charset=utf-8");
-        outbound.end("gateway proxy target must be an absolute URL");
+        outbound.end("gateway proxy upstream is invalid");
         return;
       }
 
-      if (destination.protocol !== "http:" && destination.protocol !== "https:") {
+      if (upstreamBase.protocol !== "http:" && upstreamBase.protocol !== "https:") {
         outbound.statusCode = 400;
         outbound.setHeader("Content-Type", "text/plain; charset=utf-8");
-        outbound.end("gateway proxy target must use http or https");
+        outbound.end("gateway proxy upstream must use http or https");
         return;
       }
+
+      const proxiedPath = path.slice(matchedPrefix.length) || "/";
+      const destination = new URL(`${proxiedPath}${requestUrl.search}`, upstreamBase);
 
       const method = (inbound.method ?? "GET").toUpperCase();
       const hasBody = method !== "GET" && method !== "HEAD";
@@ -123,6 +145,9 @@ function devGatewayProxyPlugin() {
 
           headers.set(name, Array.isArray(value) ? value.join(", ") : value);
         }
+
+        headers.set("x-forwarded-host", inbound.headers?.host ?? "");
+        headers.set("x-forwarded-proto", "http");
 
         const upstream = await fetch(destination.toString(), {
           method,
@@ -151,7 +176,15 @@ function devGatewayProxyPlugin() {
       }
     };
 
-    server.middlewares.use("/__gateway_proxy__", handler);
+    server.middlewares.use((req, res, next) => {
+      const requestUrl = new URL(req.url ?? "/", "http://localhost");
+      if (!matchProxyPrefix(requestUrl.pathname)) {
+        next();
+        return;
+      }
+
+      void handler(req, res);
+    });
   };
 
   return {

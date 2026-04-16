@@ -470,8 +470,28 @@ function withSlash(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
 }
 
+function absoluteBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  try {
+    return new URL(trimmed).toString();
+  } catch {
+    // Fall through to path-style normalization below.
+  }
+
+  const normalizedPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  if (typeof window !== "undefined") {
+    return new URL(normalizedPath, window.location.origin).toString();
+  }
+
+  return new URL(normalizedPath, "http://localhost").toString();
+}
+
 function joinUrl(baseUrl: string, path: string): string {
-  const url = new URL(path.replace(/^\/+/, ""), withSlash(baseUrl));
+  const url = new URL(path.replace(/^\/+/, ""), withSlash(absoluteBaseUrl(baseUrl)));
   return url.toString();
 }
 
@@ -515,7 +535,8 @@ function normalizeGatewayBaseUrl(baseUrl: string): string {
     parsed.hash = "";
     return trimTrailingSlash(parsed.toString());
   } catch {
-    return trimTrailingSlash(trimmed);
+    const normalizedPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+    return trimTrailingSlash(normalizedPath);
   }
 }
 
@@ -655,8 +676,8 @@ function toGatewayRequestUrls(url: string): string[] {
       return [target.toString()];
     }
 
-    const proxy = new URL(DEV_GATEWAY_PROXY_PATH, window.location.origin);
-    proxy.searchParams.set("target", target.toString());
+    const proxiedPath = `${DEV_GATEWAY_PROXY_PATH}${target.pathname}`;
+    const proxy = new URL(`${proxiedPath}${target.search}`, window.location.origin);
     return [proxy.toString(), target.toString()];
   } catch {
     return [url];
@@ -954,6 +975,7 @@ function buildGraph(nodes: NodeDto[]): GraphResponse {
 function normalizeConfig(input: unknown): AppConfig {
   const record = asRecord(input);
   const layoutOverrides = readObject(record, "layoutOverrides", "layout_overrides");
+  // Empty/cleared gateway URL should fall back to the managed default.
   const gatewayRaw = readString(record, "gatewayBaseUrl", "gateway_base_url") || DEFAULT_GATEWAY_BASE_URL;
   const gatewayAuthRaw = readString(record, "gatewayAuthToken", "gateway_auth_token") || DEFAULT_GATEWAY_AUTH_TOKEN;
 

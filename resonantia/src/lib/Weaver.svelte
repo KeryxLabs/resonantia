@@ -11,7 +11,8 @@
   import SettingsDrawer from './components/SettingsDrawer.svelte';
   import WalkthroughGuide from './components/WalkthroughGuide.svelte';
   import AdventureOnboarding from './components/AdventureOnboarding.svelte';
-  import { getCloudAuthStatus, getGatewayAuthToken, signOutCloud, startCloudSignIn, getCloudAccount } from './cloudAuth';
+  import { getCloudAuthStatus, getGatewayAuthToken, signOutCloud, redirectToCloudSignIn, getCloudAccount } from './cloudAuth';
+  import { getGatewayBaseUrl as getManagedGatewayBaseUrl } from './config';
   import { resonantiaClient } from './resonantiaClient';
   import type {
     AiSummary,
@@ -2028,6 +2029,33 @@
   let cloudAccountMemberSince: string | null = null;
   let advancedOpen = false;
   let localModelOriginWarning: string | null = null;
+  const MANAGED_GATEWAY_BASE_URL = getManagedGatewayBaseUrl().trim();
+
+  function normalizeGatewayForCompare(value: string) {
+    return value.trim().replace(/\/+$/, '');
+  }
+
+  function isManagedGatewayBaseUrl(value: string) {
+    const normalized = normalizeGatewayForCompare(value);
+    const managed = normalizeGatewayForCompare(MANAGED_GATEWAY_BASE_URL);
+    if (!managed) {
+      return normalized.length === 0;
+    }
+    return normalized.length === 0 || normalized === managed;
+  }
+
+  function resolveEffectiveGatewayBaseUrl(inputValue: string) {
+    const trimmed = inputValue.trim();
+    return trimmed || MANAGED_GATEWAY_BASE_URL;
+  }
+
+  function displayGatewayInputFromConfig(configured: string) {
+    return isManagedGatewayBaseUrl(configured) ? '' : configured;
+  }
+
+  function hasPaidCloudTier(tier: string | null) {
+    return tier === 'resonant' || tier === 'soulful';
+  }
 
   function isLoopbackHostName(hostname: string) {
     const normalized = hostname.trim().toLowerCase();
@@ -2070,7 +2098,7 @@
 
     try {
       const config = await resonantiaClient.getConfig();
-      gatewayBaseUrl = config.gatewayBaseUrl ?? '';
+      gatewayBaseUrl = displayGatewayInputFromConfig(config.gatewayBaseUrl ?? '');
       gatewayAuthToken = config.gatewayAuthToken ?? '';
       ollamaBaseUrl = config.ollamaBaseUrl;
       ollamaModel = config.ollamaModel;
@@ -2096,9 +2124,10 @@
       }
 
       if (status.signedIn) {
-        const marker = status.userId ? ` · ${status.userId.slice(0, 8)}` : '';
-        cloudAuthStatus = `cloud account connected${marker}`;
-        const account = await getCloudAccount(gatewayBaseUrl, gatewayAuthToken).catch(() => null);
+        const marker = status.username ?? (status.userId ? status.userId.slice(0, 8) : null);
+        cloudAuthStatus = `cloud account connected${marker ? ` · ${marker}` : ''}`;
+        const effectiveGatewayBaseUrl = resolveEffectiveGatewayBaseUrl(gatewayBaseUrl);
+        const account = await getCloudAccount(effectiveGatewayBaseUrl, gatewayAuthToken).catch(() => null);
         cloudAccountTier = account?.tier ?? null;
         cloudAccountMemberSince = account?.memberSince ?? null;
       } else {
@@ -2122,13 +2151,15 @@
     cloudAuthBusy = true;
     cloudAuthError = null;
     try {
-      await startCloudSignIn();
-      await refreshCloudAuthState();
+      // Redirect to Clerk's hosted sign-in; returns to current URL after auth.
+      // (openSignIn modal requires the full Clerk UI bundle which is unavailable
+      // in the @clerk/clerk-js npm/ESM build — only the CDN script includes it.)
+      await redirectToCloudSignIn(window.location.href);
     } catch (err) {
       cloudAuthError = String(err);
-    } finally {
       cloudAuthBusy = false;
     }
+    // page navigates on success — finally would reset busy state prematurely
   }
 
   async function refreshGatewayAuthToken() {
@@ -2194,11 +2225,14 @@
     settingsSaved = false;
 
     try {
+      const gatewayInput = gatewayBaseUrl.trim();
       await resonantiaClient.setOllamaConfig(ollamaBaseUrl.trim(), ollamaModel.trim());
-      await resonantiaClient.setGatewayBaseUrl(gatewayBaseUrl.trim());
+      await resonantiaClient.setGatewayBaseUrl(gatewayInput);
       await resonantiaClient.setGatewayAuthToken(gatewayAuthToken.trim());
 
       settingsSaved = true;
+      gatewayBaseUrl = displayGatewayInputFromConfig(gatewayInput);
+      await refreshCloudAuthState();
       await checkHealth();
       await loadGraph();
     } catch (err) {
@@ -3050,6 +3084,22 @@
     clearSyncDetailTimer();
 
     try {
+      const config = await resonantiaClient.getConfig();
+      const configuredGateway = (config.gatewayBaseUrl ?? '').trim();
+      const usingManagedGateway = isManagedGatewayBaseUrl(configuredGateway);
+
+      if (usingManagedGateway) {
+        await refreshCloudAuthState();
+      }
+
+      if (usingManagedGateway && !hasPaidCloudTier(cloudAccountTier)) {
+        if (!cloudAuthSignedIn) {
+          throw new Error('cloud sync on the managed gateway requires sign-in and a resonant/soulful plan');
+        }
+
+        throw new Error('cloud sync on the managed gateway is available on resonant or soulful tier; add your own gateway URL to use BYO sync on free tier');
+      }
+
       try {
         await refreshGatewayAuthTokenForSync();
       } catch (tokenError) {

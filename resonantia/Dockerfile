@@ -1,3 +1,5 @@
+# Runtime config is injected by docker-entrypoint.sh from environment variables.
+# No VITE_* build args needed — the image is environment-agnostic.
 FROM node:20-alpine AS build
 WORKDIR /app
 
@@ -16,7 +18,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY --from=build /app /app
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 4173
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["npm", "run", "preview:lan"]

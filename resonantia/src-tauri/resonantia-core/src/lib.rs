@@ -307,6 +307,31 @@ impl SurrealSdkClient {
         Ok(Self { db })
     }
 
+    async fn connect_with_auth(
+        endpoint: &str,
+        namespace: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, String> {
+        use surrealdb::opt::auth::Root;
+
+        let db = surreal_connect(endpoint)
+            .await
+            .map_err(|err| map_err("failed to connect remote SurrealDB", err))?;
+
+        db.signin(Root { username: username.to_string(), password: password.to_string() })
+            .await
+            .map_err(|err| map_err("failed to sign in to SurrealDB", err))?;
+
+        db.use_ns(namespace)
+            .use_db(database)
+            .await
+            .map_err(|err| map_err("failed to select SurrealDB namespace/database", err))?;
+
+        Ok(Self { db })
+    }
+
     async fn ensure_source_metadata_schema(&self) -> Result<(), String> {
         // sttp-core-rs serializes ConnectorMetadata in camelCase; define nested
         // fields so SCHEMAFULL temporal_node accepts source_metadata payloads.
@@ -814,6 +839,36 @@ fn build_in_memory_runtime() -> (Arc<SttpRuntime>, String) {
         Arc::new(SttpRuntime::new(store_trait)),
         "sttp-core-rs (in-memory fallback)".to_string(),
     )
+}
+
+fn build_remote_surreal_runtime(
+    endpoint: &str,
+    namespace: &str,
+    database: &str,
+    username: &str,
+    password: &str,
+) -> Result<(Arc<SttpRuntime>, String), String> {
+    let client = block_on_sync(async {
+        SurrealSdkClient::connect_with_auth(endpoint, namespace, database, username, password).await
+    })
+    .map_err(|err| map_err("failed to spawn remote SurrealDB connect task", err))?
+    .map_err(|err| map_err("failed to connect remote SurrealDB", err))?;
+
+    block_on_sync(async { client.ensure_source_metadata_schema().await })
+        .map_err(|err| map_err("failed to spawn source metadata schema task", err))?
+        .map_err(|err| map_err("failed to ensure source metadata schema", err))?;
+
+    let store = Arc::new(SurrealDbNodeStore::new(Arc::new(client)));
+    let initializer: Arc<dyn NodeStoreInitializer> = store.clone();
+    block_on_sync(async { initializer.initialize_async().await })
+        .map_err(|err| map_err("failed to initialize remote STTP schema", err))?
+        .map_err(|err| map_err("failed to initialize remote STTP store", err))?;
+
+    let store_trait: Arc<dyn NodeStore> = store;
+    Ok((
+        Arc::new(SttpRuntime::new(store_trait)),
+        format!("sttp-core-rs (surrealdb remote: {endpoint} / {namespace} / {database})"),
+    ))
 }
 
 fn build_surreal_runtime(config_dir: &Path) -> Result<(Arc<SttpRuntime>, String), String> {
@@ -2213,6 +2268,39 @@ fn unwind(node: NodeDto) -> UnwindResult {
 
 pub fn create_app_state() -> AppState {
     AppState::default()
+}
+
+/// Initialize per-tenant node storage using a remote SurrealDB instance.
+/// Uses `user_id` as the SurrealDB database name for complete tenant isolation.
+pub fn initialize_app_state_remote(
+    state: &AppState,
+    endpoint: &str,
+    namespace: &str,
+    user_id: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    match build_remote_surreal_runtime(endpoint, namespace, user_id, username, password) {
+        Ok((runtime, label)) => {
+            if let Ok(mut guard) = state.sttp_runtime.write() {
+                *guard = runtime;
+            }
+            if let Ok(mut guard) = state.sttp_runtime_label.write() {
+                *guard = label;
+            }
+        }
+        Err(err) => {
+            eprintln!("remote surreal runtime init warning: {err}");
+            let (fallback_runtime, fallback_label) = build_in_memory_runtime();
+            if let Ok(mut guard) = state.sttp_runtime.write() {
+                *guard = fallback_runtime;
+            }
+            if let Ok(mut guard) = state.sttp_runtime_label.write() {
+                *guard = fallback_label;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn initialize_app_state(state: &AppState, config_dir: &Path) -> Result<(), String> {

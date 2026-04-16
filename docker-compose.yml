@@ -1,10 +1,121 @@
+# Resonantia — full stack docker compose
+# Copy .env.example → .env and fill in your values before running.
+#
+# Local build + run:
+#   docker compose up --build
+#
+# Deploy from GHCR (after pushing images):
+#   docker compose pull && docker compose up -d
+#
+# Services
+#   resonantia-surreal  SurrealDB node storage (internal only) → :8000
+#   resonantia-web      SvelteKit SPA served via vite preview  → :4173
+#   resonantia-gateway  Axum REST + STTP storage               → :8090
+
+# Set in .env: GHCR_OWNER=your-github-username-or-org  IMAGE_TAG=latest
+
 services:
+
+  # ── SurrealDB (node storage, not exposed externally) ─────────────────────────
+  resonantia-surreal:
+    image: surrealdb/surrealdb:latest
+    container_name: resonantia-surreal
+    restart: unless-stopped
+    user: root
+    command: start --log info --user "${RESONANTIA_SURREALDB_USER:-root}" --pass "${RESONANTIA_SURREALDB_PASS}" surrealkv:///data/surreal
+    volumes:
+      - surreal-data:/data/surreal
+    # Not exposed on the host — gateway reaches it via the internal Docker network.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://localhost:8000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Gateway (Axum + SurrealDB node store) ──────────────────────────────
+  resonantia-gateway:
+    build:
+      # Context is the monorepo root so the Rust path dep (../src-tauri/resonantia-core) resolves.
+      context: ./resonantia
+      dockerfile: gateway/Dockerfile
+    # GHCR image — set GHCR_OWNER and IMAGE_TAG in your .env
+    image: ghcr.io/${GHCR_OWNER:-your-org}/resonantia-gateway:${IMAGE_TAG:-latest}
+    container_name: resonantia-gateway
+    restart: unless-stopped
+    expose:
+      - "8090"
+    volumes:
+      - gateway-data:/data/gateway
+    depends_on:
+      resonantia-surreal:
+        condition: service_healthy
+    environment:
+      # Remote SurrealDB for node storage (database-per-tenant isolation)
+      RESONANTIA_SURREALDB_ENDPOINT: "${RESONANTIA_SURREALDB_ENDPOINT:-ws://resonantia-surreal:8000}"
+      RESONANTIA_SURREALDB_NS: "${RESONANTIA_SURREALDB_NS:-resonantia}"
+      RESONANTIA_SURREALDB_USER: "${RESONANTIA_SURREALDB_USER:-root}"
+      RESONANTIA_SURREALDB_PASS: "${RESONANTIA_SURREALDB_PASS}"
+
+      RESONANTIA_GATEWAY_BIND: "0.0.0.0:8090"
+      RESONANTIA_GATEWAY_DATA_DIR: "/data/gateway"
+
+      # Comma-separated list of origins allowed to call the gateway.
+      RESONANTIA_GATEWAY_ALLOWED_ORIGINS: "${RESONANTIA_GATEWAY_ALLOWED_ORIGINS:-https://app.resonantia.me,https://account.resonantia.me}"
+
+      # Auth mode: "off" (header tenant) or "clerk" (JWT required)
+      RESONANTIA_GATEWAY_AUTH_MODE: "${RESONANTIA_GATEWAY_AUTH_MODE:-off}"
+
+      # Required when AUTH_MODE=clerk
+      RESONANTIA_GATEWAY_CLERK_ISSUER: "${RESONANTIA_GATEWAY_CLERK_ISSUER:-}"
+      RESONANTIA_GATEWAY_CLERK_JWKS_URL: "${RESONANTIA_GATEWAY_CLERK_JWKS_URL:-}"
+      RESONANTIA_GATEWAY_CLERK_AUDIENCE: "${RESONANTIA_GATEWAY_CLERK_AUDIENCE:-}"
+      RESONANTIA_GATEWAY_CLERK_TENANT_CLAIM: "${RESONANTIA_GATEWAY_CLERK_TENANT_CLAIM:-sub}"
+      RESONANTIA_GATEWAY_CLERK_JWKS_CACHE_SECONDS: "${RESONANTIA_GATEWAY_CLERK_JWKS_CACHE_SECONDS:-300}"
+      RESONANTIA_GATEWAY_ALLOW_TENANT_HEADER_FALLBACK: "${RESONANTIA_GATEWAY_ALLOW_TENANT_HEADER_FALLBACK:-false}"
+
+      # Default tenant when no claim/header is present
+      RESONANTIA_GATEWAY_DEFAULT_TENANT: "${RESONANTIA_GATEWAY_DEFAULT_TENANT:-public}"
+
+      # Admin secret — gates PATCH /api/v1/account/tier
+      RESONANTIA_GATEWAY_ADMIN_SECRET: "${RESONANTIA_GATEWAY_ADMIN_SECRET:-}"
+
+      # Stripe integration (all three required to enable; omit any to disable)
+      RESONANTIA_STRIPE_SECRET_KEY: "${RESONANTIA_STRIPE_SECRET_KEY:-}"
+      RESONANTIA_STRIPE_WEBHOOK_SECRET: "${RESONANTIA_STRIPE_WEBHOOK_SECRET:-}"
+      RESONANTIA_STRIPE_PRICE_ID_RESONANT: "${RESONANTIA_STRIPE_PRICE_ID_RESONANT:-}"
+      RESONANTIA_STRIPE_PRICE_ID_SOULFUL: "${RESONANTIA_STRIPE_PRICE_ID_SOULFUL:-}"
+      RESONANTIA_STRIPE_SUCCESS_URL: "${RESONANTIA_STRIPE_SUCCESS_URL:-https://account.resonantia.me?payment=success}"
+      RESONANTIA_STRIPE_CANCEL_URL: "${RESONANTIA_STRIPE_CANCEL_URL:-https://account.resonantia.me?payment=cancelled}"
+
+      # Log level (trace | debug | info | warn | error)
+      RUST_LOG: "${RUST_LOG:-resonantia_gateway=info,tower_http=warn}"
+
+  # ── Web (SvelteKit SPA via vite preview) ───────────────────────────────────
   resonantia-web:
     build:
       context: ./resonantia
       dockerfile: Dockerfile
-    image: resonantia-web:latest
+    image: ghcr.io/${GHCR_OWNER:-your-org}/resonantia-web:${IMAGE_TAG:-latest}
     container_name: resonantia-web
     restart: unless-stopped
     ports:
       - "${RESONANTIA_PORT:-4173}:4173"
+    environment:
+      # Same-origin path; vite preview proxy forwards to RESONANTIA_GATEWAY_UPSTREAM.
+      VITE_GATEWAY_BASE_URL: "${VITE_GATEWAY_BASE_URL:-/__gateway_proxy__}"
+      RESONANTIA_GATEWAY_UPSTREAM: "${RESONANTIA_GATEWAY_UPSTREAM:-http://resonantia-gateway:8090}"
+      VITE_CLERK_PUBLISHABLE_KEY: "${VITE_CLERK_PUBLISHABLE_KEY}"
+      VITE_CLERK_GATEWAY_TOKEN_TEMPLATE: "${VITE_CLERK_GATEWAY_TOKEN_TEMPLATE:-}"
+    depends_on:
+      - resonantia-gateway
+      - resonantia-surreal
+
+volumes:
+  gateway-data:
+    driver: local
+  surreal-data:
+    driver: local
+

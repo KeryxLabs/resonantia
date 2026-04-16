@@ -56,7 +56,13 @@
         {#if accountTier || accountMemberSince}
           <div class="account-meta">
             {#if accountTier}
-              <span class="account-tier-badge" class:subscriber={accountTier === 'subscriber'}>{accountTier} plan</span>
+              <span
+                class="account-tier-badge"
+                class:resonant={accountTier === 'resonant'}
+                class:soulful={accountTier === 'soulful'}
+              >
+                {accountTier} plan
+              </span>
             {/if}
             {#if accountMemberSince}
               <span class="account-since">since {formatMemberSince(accountMemberSince)}</span>
@@ -386,10 +392,16 @@
     background: rgba(255, 255, 255, 0.04);
   }
 
-  .account-tier-badge.subscriber {
+  .account-tier-badge.resonant {
     border-color: rgba(147, 230, 187, 0.3);
     color: rgba(191, 245, 216, 0.88);
     background: rgba(82, 171, 125, 0.1);
+  }
+
+  .account-tier-badge.soulful {
+    border-color: rgba(190, 130, 230, 0.32);
+    color: rgba(230, 200, 255, 0.88);
+    background: rgba(160, 90, 220, 0.12);
   }
 
   .account-since {

@@ -10,8 +10,11 @@ http = "1"
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 resonantia-core = { path = "../src-tauri/resonantia-core" }
+hex = "0.4"
+hmac = { version = "0.12", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 surrealdb = { version = "3", default-features = false, features = ["kv-surrealkv", "kv-mem"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
