@@ -3100,13 +3100,23 @@
         throw new Error('cloud sync on the managed gateway is available on resonant or soulful tier; add your own gateway URL to use BYO sync on free tier');
       }
 
-      try {
-        await refreshGatewayAuthTokenForSync();
-      } catch (tokenError) {
-        cloudAuthError = String(tokenError);
+      let syncAuthToken = (config.gatewayAuthToken ?? '').trim();
+
+      if (usingManagedGateway) {
+        try {
+          await refreshGatewayAuthTokenForSync();
+          const refreshed = await resonantiaClient.getConfig();
+          syncAuthToken = (refreshed.gatewayAuthToken ?? '').trim();
+        } catch (tokenError) {
+          cloudAuthError = String(tokenError);
+        }
       }
 
-      syncPullResult = await resonantiaClient.syncNow({ pageSize: 200 });
+      syncPullResult = await resonantiaClient.syncNow({
+        pageSize: 200,
+        gatewayBaseUrl: configuredGateway || undefined,
+        gatewayAuthToken: syncAuthToken || undefined,
+      });
       await loadGraph();
     } catch (err) {
       syncPullError = String(err);

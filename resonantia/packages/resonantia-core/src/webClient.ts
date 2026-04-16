@@ -676,9 +676,9 @@ function toGatewayRequestUrls(url: string): string[] {
       return [target.toString()];
     }
 
-    const proxiedPath = `${DEV_GATEWAY_PROXY_PATH}${target.pathname}`;
-    const proxy = new URL(`${proxiedPath}${target.search}`, window.location.origin);
-    return [proxy.toString(), target.toString()];
+    // BYO gateway URLs should be called directly. Proxying cross-origin targets through
+    // the managed gateway path can route to the wrong backend and produce false 401s.
+    return [target.toString()];
   } catch {
     return [url];
   }
