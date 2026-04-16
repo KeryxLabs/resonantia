@@ -13,10 +13,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use sha2::Sha256;
 use resonantia_core::{
-    create_app_state, get_health, get_graph, initialize_app_state, initialize_app_state_remote,
+    create_app_state, get_health, get_graph, initialize_app_state, initialize_app_state_remote_strict,
     list_nodes, store_context,
     AppState, GraphResponse, HealthResponse, ListNodesResponse, StoreContextRequest,
     StoreContextResponse,
@@ -27,7 +28,7 @@ use surrealdb::engine::any::{connect as surreal_connect, Any as SurrealAny};
 use surrealdb::Surreal;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tokio::sync::RwLock;
 
@@ -220,8 +221,15 @@ struct SurrealConfig {
 struct TenantPool {
     data_root: PathBuf,
     default_tenant: String,
-    states: RwLock<HashMap<String, Arc<AppState>>>,
+    states: RwLock<HashMap<String, TenantStateEntry>>,
+    max_cached_tenants: usize,
+    tenant_idle_ttl: Duration,
     surreal: Option<Arc<SurrealConfig>>,
+}
+
+struct TenantStateEntry {
+    state: Arc<AppState>,
+    last_access: Instant,
 }
 
 #[derive(Deserialize)]
@@ -240,7 +248,6 @@ struct UserContext {
 #[derive(Clone)]
 struct TenantRequestContext {
     state: Arc<AppState>,
-    user_id: Option<String>,
 }
 
 enum GatewayAuthMode {
@@ -257,6 +264,7 @@ struct ClerkAuth {
     audience: Option<String>,
     tenant_claim: String,
     allow_tenant_header_fallback: bool,
+    token_leeway_seconds: u64,
     jwks_url: String,
     jwks_cache_ttl: Duration,
     http: reqwest::Client,
@@ -299,6 +307,21 @@ async fn main() {
     );
     let default_tenant = env::var("RESONANTIA_GATEWAY_DEFAULT_TENANT")
         .unwrap_or_else(|_| "public".to_string());
+    let max_cached_tenants = env::var("RESONANTIA_GATEWAY_MAX_CACHED_TENANTS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(256)
+        .max(1);
+    let tenant_idle_ttl_seconds = env::var("RESONANTIA_GATEWAY_TENANT_IDLE_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1800)
+        .max(30);
+    let tenant_cache_cleanup_seconds = env::var("RESONANTIA_GATEWAY_TENANT_CACHE_CLEANUP_SECONDS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(300)
+        .max(15);
 
     let surreal_config = {
         let endpoint = env::var("RESONANTIA_SURREALDB_ENDPOINT").ok().filter(|s| !s.trim().is_empty());
@@ -327,6 +350,22 @@ async fn main() {
             .expect("failed to open account store")
     };
 
+    let tenant_pool = Arc::new(TenantPool {
+        data_root: data_root.clone(),
+        default_tenant: default_tenant.clone(),
+        states: RwLock::new(HashMap::new()),
+        max_cached_tenants,
+        tenant_idle_ttl: Duration::from_secs(tenant_idle_ttl_seconds),
+        surreal: surreal_config.clone(),
+    });
+
+    info!(
+        max_cached_tenants,
+        tenant_idle_ttl_seconds,
+        tenant_cache_cleanup_seconds,
+        "tenant cache configured"
+    );
+
     let admin_secret = env::var("RESONANTIA_GATEWAY_ADMIN_SECRET")
         .ok()
         .map(|s| s.trim().to_string())
@@ -339,6 +378,12 @@ async fn main() {
         let price_id_soulful = env::var("RESONANTIA_STRIPE_PRICE_ID_SOULFUL").ok().filter(|s| !s.trim().is_empty());
         match (key, webhook_secret, price_id_resonant, price_id_soulful) {
             (Some(secret_key), Some(webhook_secret), Some(price_id_resonant), Some(price_id_soulful)) => {
+                if !looks_like_stripe_price_id(&price_id_resonant) {
+                    warn!(price_id_resonant, "stripe resonant tier id does not look like a Price ID (expected prefix 'price_')");
+                }
+                if !looks_like_stripe_price_id(&price_id_soulful) {
+                    warn!(price_id_soulful, "stripe soulful tier id does not look like a Price ID (expected prefix 'price_')");
+                }
                 let success_url = env::var("RESONANTIA_STRIPE_SUCCESS_URL")
                     .unwrap_or_else(|_| "https://account.resonantia.me?payment=success".to_string());
                 let cancel_url = env::var("RESONANTIA_STRIPE_CANCEL_URL")
@@ -354,17 +399,17 @@ async fn main() {
     };
 
     let context = GatewayContext {
-        tenant_pool: Arc::new(TenantPool {
-            data_root,
-            default_tenant,
-            states: RwLock::new(HashMap::new()),
-            surreal: surreal_config,
-        }),
+        tenant_pool: tenant_pool.clone(),
         auth: Arc::new(AuthResolver::from_env().expect("invalid gateway auth configuration")),
         accounts: Arc::new(accounts),
         admin_secret,
         stripe,
     };
+
+    start_tenant_cache_cleanup(
+        tenant_pool,
+        Duration::from_secs(tenant_cache_cleanup_seconds),
+    );
 
     let app = Router::new()
         .route("/health", get(health_handler))
@@ -455,8 +500,8 @@ async fn account_handler(
     State(context): State<GatewayContext>,
     headers: HeaderMap,
 ) -> Result<Json<AccountResponse>, AppError> {
-    let tenant = resolve_tenant_context(&context, &headers).await?;
-    let user_id = tenant.user_id.ok_or_else(|| {
+    let user_ctx = resolve_user_context(&context, &headers).await?;
+    let user_id = user_ctx.user_id.ok_or_else(|| {
         AppError::unauthorized("account endpoint requires clerk auth".to_string())
     })?;
 
@@ -500,8 +545,8 @@ async fn checkout_handler(
         return Err(AppError::bad_request("tier must be 'resonant' or 'soulful'".to_string()));
     }
 
-    let tenant = resolve_tenant_context(&context, &headers).await?;
-    let user_id = tenant.user_id.ok_or_else(|| {
+    let user_ctx = resolve_user_context(&context, &headers).await?;
+    let user_id = user_ctx.user_id.ok_or_else(|| {
         AppError::unauthorized("checkout requires clerk auth".to_string())
     })?;
 
@@ -510,6 +555,12 @@ async fn checkout_handler(
     } else {
         stripe.price_id_resonant.as_str()
     };
+    if !looks_like_stripe_price_id(price_id) {
+        return Err(AppError::internal(format!(
+            "invalid stripe price id configured for tier '{}': '{}'. Use a Price ID (price_...), not a Product ID (prod_...).",
+            request.tier, price_id
+        )));
+    }
     let tier_str = request.tier.as_str();
     let user_id_str = user_id.as_str();
 
@@ -570,8 +621,8 @@ async fn customer_portal_handler(
         .as_ref()
         .ok_or_else(|| AppError::bad_request("stripe is not configured on this gateway".to_string()))?;
 
-    let tenant = resolve_tenant_context(&context, &headers).await?;
-    let user_id = tenant.user_id.ok_or_else(|| {
+    let user_ctx = resolve_user_context(&context, &headers).await?;
+    let user_id = user_ctx.user_id.ok_or_else(|| {
         AppError::unauthorized("customer portal requires clerk auth".to_string())
     })?;
 
@@ -645,6 +696,10 @@ fn verify_stripe_signature(body: &[u8], sig_header: &str, secret: &str) -> bool 
         sig.len() == expected_hex.len()
             && sig.bytes().zip(expected_hex.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
     })
+}
+
+fn looks_like_stripe_price_id(value: &str) -> bool {
+    value.trim().starts_with("price_")
 }
 
 async fn stripe_webhook_handler(
@@ -739,8 +794,7 @@ async fn list_nodes_handler(
     headers: HeaderMap,
     Query(query): Query<ListNodesQuery>,
 ) -> Result<Json<ListNodesResponse>, AppError> {
-    let tenant = resolve_tenant_context(&context, &headers).await?;
-    enforce_cloud_sync_entitlement(&context, tenant.user_id.as_deref()).await?;
+    let tenant = resolve_sync_tenant_context(&context, &headers).await?;
     let response = list_nodes(
         &tenant.state,
         query.limit.unwrap_or(200),
@@ -756,8 +810,7 @@ async fn graph_handler(
     headers: HeaderMap,
     Query(query): Query<ListNodesQuery>,
 ) -> Result<Json<GraphResponse>, AppError> {
-    let tenant = resolve_tenant_context(&context, &headers).await?;
-    enforce_cloud_sync_entitlement(&context, tenant.user_id.as_deref()).await?;
+    let tenant = resolve_sync_tenant_context(&context, &headers).await?;
     let response = get_graph(
         &tenant.state,
         query.limit.unwrap_or(200),
@@ -773,8 +826,7 @@ async fn store_handler(
     headers: HeaderMap,
     Json(request): Json<StoreContextRequest>,
 ) -> Result<Json<StoreContextResponse>, AppError> {
-    let tenant = resolve_tenant_context(&context, &headers).await?;
-    enforce_cloud_sync_entitlement(&context, tenant.user_id.as_deref()).await?;
+    let tenant = resolve_sync_tenant_context(&context, &headers).await?;
     let response = store_context(&tenant.state, request)
         .await
         .map_err(AppError::internal)?;
@@ -814,6 +866,41 @@ async fn resolve_tenant_context(
     context: &GatewayContext,
     headers: &HeaderMap,
 ) -> Result<TenantRequestContext, AppError> {
+    let user_ctx = resolve_user_context(context, headers).await?;
+
+    let state = context
+        .tenant_pool
+        .state_for(&user_ctx.tenant_id)
+        .await
+        .map_err(AppError::internal)?;
+
+    Ok(TenantRequestContext {
+        state,
+    })
+}
+
+async fn resolve_sync_tenant_context(
+    context: &GatewayContext,
+    headers: &HeaderMap,
+) -> Result<TenantRequestContext, AppError> {
+    let user_ctx = resolve_user_context(context, headers).await?;
+    enforce_cloud_sync_entitlement(context, user_ctx.user_id.as_deref()).await?;
+
+    let state = context
+        .tenant_pool
+        .state_for(&user_ctx.tenant_id)
+        .await
+        .map_err(AppError::internal)?;
+
+    Ok(TenantRequestContext {
+        state,
+    })
+}
+
+async fn resolve_user_context(
+    context: &GatewayContext,
+    headers: &HeaderMap,
+) -> Result<UserContext, AppError> {
     let user_ctx = context
         .auth
         .resolve_user_context(headers, &context.tenant_pool.default_tenant)
@@ -827,16 +914,7 @@ async fn resolve_tenant_context(
         }
     }
 
-    let state = context
-        .tenant_pool
-        .state_for(&user_ctx.tenant_id)
-        .await
-        .map_err(AppError::internal)?;
-
-    Ok(TenantRequestContext {
-        state,
-        user_id: user_ctx.user_id,
-    })
+    Ok(user_ctx)
 }
 
 fn tenant_id_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -941,10 +1019,16 @@ impl AuthResolver {
         let allow_tenant_header_fallback =
             env_flag("RESONANTIA_GATEWAY_ALLOW_TENANT_HEADER_FALLBACK", false);
 
+        let token_leeway_seconds = env::var("RESONANTIA_GATEWAY_CLERK_TOKEN_LEEWAY_SECONDS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(60);
+
         info!(
             %issuer,
             %jwks_url,
             tenant_claim = %tenant_claim,
+            token_leeway_seconds,
             "gateway auth mode: clerk"
         );
 
@@ -954,6 +1038,7 @@ impl AuthResolver {
                 audience,
                 tenant_claim,
                 allow_tenant_header_fallback,
+                token_leeway_seconds,
                 jwks_url,
                 jwks_cache_ttl: Duration::from_secs(jwks_ttl_seconds.max(15)),
                 http: reqwest::Client::new(),
@@ -1047,12 +1132,44 @@ impl ClerkAuth {
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[self.issuer.as_str()]);
+        validation.leeway = self.token_leeway_seconds;
         if let Some(audience) = &self.audience {
             validation.set_audience(&[audience.as_str()]);
         }
 
-        let data = decode::<Value>(token, &decoding_key, &validation)
-            .map_err(|err| AppError::unauthorized(format!("token verification failed: {err}")))?;
+        let data = decode::<Value>(token, &decoding_key, &validation).map_err(|err| {
+            if matches!(err.kind(), ErrorKind::ExpiredSignature) {
+                // Re-parse claims with exp/nbf checks disabled so we can log token timing details.
+                let mut relaxed = validation.clone();
+                relaxed.validate_exp = false;
+                relaxed.validate_nbf = false;
+
+                if let Ok(relaxed_data) = decode::<Value>(token, &decoding_key, &relaxed) {
+                    let now = Utc::now().timestamp();
+                    let exp = relaxed_data.claims.get("exp").and_then(|v| v.as_i64());
+                    let iat = relaxed_data.claims.get("iat").and_then(|v| v.as_i64());
+                    let nbf = relaxed_data.claims.get("nbf").and_then(|v| v.as_i64());
+
+                    warn!(
+                        now_ts = now,
+                        exp_ts = ?exp,
+                        iat_ts = ?iat,
+                        nbf_ts = ?nbf,
+                        leeway_seconds = self.token_leeway_seconds,
+                        "clerk token rejected as expired"
+                    );
+
+                    if let Some(exp_ts) = exp {
+                        return AppError::unauthorized(format!(
+                            "token verification failed: ExpiredSignature (now={now}, exp={exp_ts}, leeway={})",
+                            self.token_leeway_seconds
+                        ));
+                    }
+                }
+            }
+
+            AppError::unauthorized(format!("token verification failed: {err}"))
+        })?;
 
         Ok(data.claims)
     }
@@ -1152,36 +1269,110 @@ fn claim_string(claims: &Value, key: &str) -> Option<String> {
 impl TenantPool {
     async fn state_for(&self, tenant_id: &str) -> Result<Arc<AppState>, String> {
         {
-            let guard = self.states.read().await;
-            if let Some(existing) = guard.get(tenant_id) {
-                return Ok(existing.clone());
+            let mut guard = self.states.write().await;
+            Self::evict_idle_locked(&mut guard, self.tenant_idle_ttl);
+            if let Some(existing) = guard.get_mut(tenant_id) {
+                existing.last_access = Instant::now();
+                return Ok(existing.state.clone());
+            }
+            if guard.len() >= self.max_cached_tenants {
+                Self::evict_one_lru_locked(&mut guard);
             }
         }
 
-        let state = Arc::new(create_app_state());
-
-        if let Some(surreal) = &self.surreal {
+        let state = if let Some(surreal) = &self.surreal {
             // Remote SurrealDB — tenant_id is the database name, no local dir needed.
-            initialize_app_state_remote(
-                &state,
-                &surreal.endpoint,
-                &surreal.namespace,
-                tenant_id,
-                &surreal.username,
-                &surreal.password,
-            )?;
+            let endpoint = surreal.endpoint.clone();
+            let namespace = surreal.namespace.clone();
+            let database = tenant_id.to_string();
+            let username = surreal.username.clone();
+            let password = surreal.password.clone();
+
+            tokio::task::spawn_blocking(move || {
+                let state = Arc::new(create_app_state());
+                initialize_app_state_remote_strict(
+                    &state,
+                    &endpoint,
+                    &namespace,
+                    &database,
+                    &username,
+                    &password,
+                )?;
+                Ok::<Arc<AppState>, String>(state)
+            })
+            .await
+            .map_err(|err| format!("failed to join remote app-state init task: {err}"))??
         } else {
             // Embedded surrealkv fallback — one file per tenant.
             let tenant_dir = self.data_root.join("tenants").join(tenant_id);
-            initialize_app_state(&state, &tenant_dir)?;
-        }
+
+            tokio::task::spawn_blocking(move || {
+                let state = Arc::new(create_app_state());
+                initialize_app_state(&state, &tenant_dir)?;
+                Ok::<Arc<AppState>, String>(state)
+            })
+            .await
+            .map_err(|err| format!("failed to join local app-state init task: {err}"))??
+        };
 
         let mut guard = self.states.write().await;
-        let entry = guard
-            .entry(tenant_id.to_string())
-            .or_insert_with(|| state.clone());
-        Ok(entry.clone())
+        Self::evict_idle_locked(&mut guard, self.tenant_idle_ttl);
+        if let Some(existing) = guard.get_mut(tenant_id) {
+            existing.last_access = Instant::now();
+            return Ok(existing.state.clone());
+        }
+        if guard.len() >= self.max_cached_tenants {
+            Self::evict_one_lru_locked(&mut guard);
+        }
+
+        guard.insert(
+            tenant_id.to_string(),
+            TenantStateEntry {
+                state: state.clone(),
+                last_access: Instant::now(),
+            },
+        );
+
+        Ok(state)
     }
+
+    async fn evict_idle_tenants(&self) -> usize {
+        let mut guard = self.states.write().await;
+        Self::evict_idle_locked(&mut guard, self.tenant_idle_ttl)
+    }
+
+    fn evict_idle_locked(
+        states: &mut HashMap<String, TenantStateEntry>,
+        tenant_idle_ttl: Duration,
+    ) -> usize {
+        let before = states.len();
+        states.retain(|_, entry| entry.last_access.elapsed() <= tenant_idle_ttl);
+        before.saturating_sub(states.len())
+    }
+
+    fn evict_one_lru_locked(states: &mut HashMap<String, TenantStateEntry>) -> Option<String> {
+        let oldest_key = states
+            .iter()
+            .max_by_key(|(_, entry)| entry.last_access.elapsed())
+            .map(|(tenant_id, _)| tenant_id.clone())?;
+        states.remove(&oldest_key);
+        Some(oldest_key)
+    }
+}
+
+fn start_tenant_cache_cleanup(tenant_pool: Arc<TenantPool>, interval: Duration) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+            let evicted = tenant_pool.evict_idle_tenants().await;
+            if evicted > 0 {
+                info!(evicted, "evicted idle tenant states from cache");
+            }
+        }
+    });
 }
 
 fn build_cors_layer() -> CorsLayer {

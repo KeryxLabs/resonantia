@@ -2272,6 +2272,27 @@ pub fn create_app_state() -> AppState {
 
 /// Initialize per-tenant node storage using a remote SurrealDB instance.
 /// Uses `user_id` as the SurrealDB database name for complete tenant isolation.
+pub fn initialize_app_state_remote_strict(
+    state: &AppState,
+    endpoint: &str,
+    namespace: &str,
+    user_id: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    let (runtime, label) = build_remote_surreal_runtime(endpoint, namespace, user_id, username, password)?;
+    if let Ok(mut guard) = state.sttp_runtime.write() {
+        *guard = runtime;
+    }
+    if let Ok(mut guard) = state.sttp_runtime_label.write() {
+        *guard = label;
+    }
+    Ok(())
+}
+
+/// Initialize per-tenant node storage using a remote SurrealDB instance.
+/// Uses `user_id` as the SurrealDB database name for complete tenant isolation.
+/// Falls back to in-memory runtime if remote initialization fails.
 pub fn initialize_app_state_remote(
     state: &AppState,
     endpoint: &str,
@@ -2280,15 +2301,8 @@ pub fn initialize_app_state_remote(
     username: &str,
     password: &str,
 ) -> Result<(), String> {
-    match build_remote_surreal_runtime(endpoint, namespace, user_id, username, password) {
-        Ok((runtime, label)) => {
-            if let Ok(mut guard) = state.sttp_runtime.write() {
-                *guard = runtime;
-            }
-            if let Ok(mut guard) = state.sttp_runtime_label.write() {
-                *guard = label;
-            }
-        }
+    match initialize_app_state_remote_strict(state, endpoint, namespace, user_id, username, password) {
+        Ok(()) => {}
         Err(err) => {
             eprintln!("remote surreal runtime init warning: {err}");
             let (fallback_runtime, fallback_label) = build_in_memory_runtime();

@@ -389,8 +389,21 @@
     checkoutingTier = tier;
     checkoutError = null;
     try {
-      const token = await getGatewayAuthToken();
-      const url = await createCheckoutSession(gatewayBaseUrl, token, tier);
+      let token = await getGatewayAuthToken();
+      let url: string;
+
+      try {
+        url = await createCheckoutSession(gatewayBaseUrl, token, tier);
+      } catch (err) {
+        const message = String(err);
+        // Recover once from edge-of-expiry JWTs by forcing a second fresh token fetch.
+        if (!message.includes('ExpiredSignature')) {
+          throw err;
+        }
+        token = await getGatewayAuthToken();
+        url = await createCheckoutSession(gatewayBaseUrl, token, tier);
+      }
+
       window.location.href = url;
     } catch (err) {
       checkoutError = String(err);
