@@ -14,6 +14,11 @@ This first scaffold provides:
 - Tenant-isolated storage roots under `gateway-data/tenants/<tenant-id>`
 - CORS configured for `https://app.resonantia.me` by default
 
+## BYO API Contract
+
+For third-party or self-hosted gateway implementations (including auth-off mode),
+see [BYO_GATEWAY_SPEC.md](BYO_GATEWAY_SPEC.md).
+
 ## Tenant + Auth Model
 
 Gateway now supports two auth modes:
