@@ -209,6 +209,24 @@ const INDEXED_DB_ERROR_MARKERS = [
   "wasm_bindgen_throw",
 ];
 
+const WEB_OBS_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(import.meta.env.VITE_WEB_OBS_ENABLED ?? "").trim().toLowerCase(),
+);
+const WEB_OBS_SAMPLE_RATE = (() => {
+  const parsed = Number(String(import.meta.env.VITE_WEB_OBS_SAMPLE_RATE ?? "0.2"));
+  if (!Number.isFinite(parsed)) {
+    return 0.2;
+  }
+  return Math.max(0, Math.min(1, parsed));
+})();
+
+type GatewayTraceContext = {
+  requestId: string;
+  traceId: string;
+  spanId: string;
+  traceparent: string;
+};
+
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
 }
@@ -261,6 +279,110 @@ function readObject(record: UnknownRecord, ...keys: string[]): UnknownRecord {
   }
 
   return {};
+}
+
+function randomHex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(values);
+  } else {
+    for (let index = 0; index < values.length; index += 1) {
+      values[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  return Array.from(values)
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function createGatewayTraceContext(): GatewayTraceContext {
+  const traceId = randomHex(16);
+  const spanId = randomHex(8);
+  const requestId = traceId;
+
+  return {
+    requestId,
+    traceId,
+    spanId,
+    traceparent: `00-${traceId}-${spanId}-01`,
+  };
+}
+
+function withGatewayTraceHeaders(init: RequestInit | undefined, trace: GatewayTraceContext): RequestInit {
+  const headers = new Headers(init?.headers ?? {});
+  if (!headers.has("x-request-id")) {
+    headers.set("x-request-id", trace.requestId);
+  }
+  if (!headers.has("traceparent")) {
+    headers.set("traceparent", trace.traceparent);
+  }
+
+  return {
+    ...(init ?? {}),
+    headers,
+  };
+}
+
+function nowMs(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function shouldSampleWebObservation(seed: string): boolean {
+  if (WEB_OBS_SAMPLE_RATE <= 0) {
+    return false;
+  }
+  if (WEB_OBS_SAMPLE_RATE >= 1) {
+    return true;
+  }
+
+  const nibble = Number.parseInt(seed.slice(-1), 16);
+  const normalized = Number.isFinite(nibble) ? nibble / 15 : 0;
+  return normalized <= WEB_OBS_SAMPLE_RATE;
+}
+
+function sanitizeObsRoute(url: string): string {
+  try {
+    return new URL(url, typeof window !== "undefined" ? window.location.origin : "http://localhost").pathname;
+  } catch {
+    return url;
+  }
+}
+
+function logGatewayWebObservation(
+  trace: GatewayTraceContext,
+  method: string,
+  url: string,
+  durationMs: number,
+  status?: number,
+  failure?: unknown,
+): void {
+  if (!WEB_OBS_ENABLED || !shouldSampleWebObservation(trace.traceId)) {
+    return;
+  }
+
+  const payload = {
+    event: "gateway_fetch",
+    requestId: trace.requestId,
+    traceId: trace.traceId,
+    spanId: trace.spanId,
+    method,
+    route: sanitizeObsRoute(url),
+    status: status ?? null,
+    durationMs: Math.round(durationMs),
+    error: failure ? errorToString(failure) : null,
+  };
+
+  if (failure || (status ?? 0) >= 500) {
+    console.warn("[resonantia.web.obs]", payload);
+  } else {
+    console.debug("[resonantia.web.obs]", payload);
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1865,6 +1987,7 @@ function parseGatewayStoreOutcome(value: unknown): GatewayStoreOutcome {
 
 async function fetchGatewayWithFallback(urls: string[], init?: RequestInit): Promise<Response> {
   let lastError: unknown = null;
+  const method = String(init?.method ?? "GET").toUpperCase();
 
   for (let index = 0; index < urls.length; index += 1) {
     const url = urls[index];
@@ -1872,14 +1995,19 @@ async function fetchGatewayWithFallback(urls: string[], init?: RequestInit): Pro
 
     for (let requestIndex = 0; requestIndex < requestUrls.length; requestIndex += 1) {
       const requestUrl = requestUrls[requestIndex];
+      const trace = createGatewayTraceContext();
+      const tracedInit = withGatewayTraceHeaders(init, trace);
+      const started = nowMs();
       try {
-        const response = await fetch(requestUrl, init);
+        const response = await fetch(requestUrl, tracedInit);
+        logGatewayWebObservation(trace, method, requestUrl, nowMs() - started, response.status);
         if (response.status === 404 && (requestIndex < requestUrls.length - 1 || index < urls.length - 1)) {
           continue;
         }
 
         return response;
       } catch (error) {
+        logGatewayWebObservation(trace, method, requestUrl, nowMs() - started, undefined, error);
         lastError = error;
         if (requestIndex < requestUrls.length - 1) {
           continue;

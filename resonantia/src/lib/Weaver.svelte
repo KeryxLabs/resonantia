@@ -1327,12 +1327,13 @@
     if (!cardData?.nodeDto?.raw || !cardData?.node?.syntheticId || transmuting) return;
 
     const syntheticId = cardData.node.syntheticId;
+    const nodeRaw = cardData.nodeDto.raw;
     if (transmutationCache[syntheticId]) return;
 
     transmuting = true;
     transmuteError = null;
     try {
-      const summary = await resonantiaClient.summarizeNode(cardData.nodeDto.raw);
+      const summary = await runManagedAiWithTokenRetry(() => resonantiaClient.summarizeNode(nodeRaw));
 
       if (!summary) {
         transmuteError = 'The model answered, but the transmutation did not resolve into a readable form.';
@@ -2193,6 +2194,72 @@
 
   function displayGatewayInputFromConfig(configured: string) {
     return isManagedGatewayBaseUrl(configured) ? '' : configured;
+  }
+
+  function isManagedGatewayTokenExpiredError(error: unknown) {
+    const message = String(error ?? '').toLowerCase();
+    if (!message) {
+      return false;
+    }
+
+    if (message.includes('expiredsignature')) {
+      return true;
+    }
+
+    if (message.includes('token verification failed') && message.includes('exp=')) {
+      return true;
+    }
+
+    return message.includes('gateway ai failed: 401') && message.includes('/ai/chat');
+  }
+
+  async function refreshGatewayAuthTokenForManagedAi(): Promise<boolean> {
+    const config = await resonantiaClient.getConfig();
+    const configuredGateway = (config.gatewayBaseUrl ?? '').trim();
+    if (!isManagedGatewayBaseUrl(configuredGateway)) {
+      return false;
+    }
+
+    const status = await getCloudAuthStatus();
+    if (!status.available || !status.signedIn) {
+      return false;
+    }
+
+    const token = await getGatewayAuthToken();
+    if (!token) {
+      return false;
+    }
+
+    gatewayAuthToken = token;
+    await resonantiaClient.setGatewayAuthToken(token);
+    return true;
+  }
+
+  async function runManagedAiWithTokenRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      await refreshGatewayAuthTokenForManagedAi();
+    } catch (tokenError) {
+      cloudAuthError = String(tokenError);
+    }
+
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isManagedGatewayTokenExpiredError(error)) {
+        throw error;
+      }
+
+      const refreshed = await refreshGatewayAuthTokenForManagedAi().catch((tokenError) => {
+        cloudAuthError = String(tokenError);
+        return false;
+      });
+
+      if (!refreshed) {
+        throw error;
+      }
+
+      return operation();
+    }
   }
 
   function hasPaidCloudTier(tier: string | null) {
@@ -3323,10 +3390,12 @@
     composeReplyLoading = true;
 
     try {
-      const reply = await resonantiaClient.chatCompose({
-        sessionId,
-        messages: composeApiMessages(nextMessages),
-      });
+      const reply = await runManagedAiWithTokenRetry(() =>
+        resonantiaClient.chatCompose({
+          sessionId,
+          messages: composeApiMessages(nextMessages),
+        })
+      );
 
       if (reply?.trim()) {
         composeMessages = [
@@ -3474,12 +3543,14 @@
 
       for (let attempt = 0; attempt < maxEncodeAttempts; attempt += 1) {
         composeEncodePromptSent = true;
-        const encodedNode = await resonantiaClient.encodeCompose({
-          sessionId,
-          messages,
-          parserErrorHint,
-          previousNodeCandidate,
-        });
+        const encodedNode = await runManagedAiWithTokenRetry(() =>
+          resonantiaClient.encodeCompose({
+            sessionId,
+            messages,
+            parserErrorHint,
+            previousNodeCandidate,
+          })
+        );
 
         res = await resonantiaClient.storeContext({
           node: encodedNode,

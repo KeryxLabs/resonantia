@@ -137,6 +137,8 @@ resonantia/               ← this repo
 | `VITE_CLERK_GATEWAY_TOKEN_TEMPLATE` | Optional | Clerk session template name for gateway JWTs |
 | `VITE_GATEWAY_BASE_URL` | Optional | Default gateway URL baked into web/Tauri builds — normies auto-point here |
 | `VITE_ALLOWED_HOSTS` | Optional | Comma-separated extra allowed dev hosts |
+| `VITE_WEB_OBS_ENABLED` | Optional | Enables sampled client-side gateway request diagnostics + trace context propagation |
+| `VITE_WEB_OBS_SAMPLE_RATE` | Optional | Sample ratio for web diagnostics (`0.0` to `1.0`, default `0.2`) |
 
 For Tauri builds, `VITE_GATEWAY_BASE_URL` is also available as `GATEWAY_BASE_URL` at Rust compile time via `option_env!("GATEWAY_BASE_URL")`.
 
@@ -156,6 +158,10 @@ For Tauri builds, `VITE_GATEWAY_BASE_URL` is also available as `GATEWAY_BASE_URL
 | `RESONANTIA_GATEWAY_CLERK_TENANT_CLAIM` | `org_id` | JWT claim used as tenant ID (falls back to `sub`) |
 | `RESONANTIA_GATEWAY_CLERK_JWKS_CACHE_SECONDS` | `300` | How long to cache JWKS keys |
 | `RESONANTIA_GATEWAY_ALLOW_TENANT_HEADER_FALLBACK` | `false` | Allow header-based tenant fallback in Clerk mode |
+| `RESONANTIA_GATEWAY_OBS_REQUEST_LOG_SAMPLE_RATE` | `0.2` | Sample ratio for structured request outcome logs (`0.0` to `1.0`) |
+| `RESONANTIA_OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (Tempo/LGTM, etc). Unset disables exporter |
+| `RESONANTIA_OTEL_SERVICE_NAME` | `resonantia-gateway` | OTEL service.name resource attribute |
+| `RESONANTIA_OTEL_TRACE_SAMPLE_RATE` | `0.1` | Trace sample ratio for OTEL spans (`0.0` to `1.0`) |
 
 ---
 

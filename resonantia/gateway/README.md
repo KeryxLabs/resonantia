@@ -72,6 +72,32 @@ When `RESONANTIA_GATEWAY_AUTH_MODE=clerk`:
   - optional
   - default: `false`
   - allows header tenant fallback in clerk mode if token does not carry tenant claim
+- `RESONANTIA_GATEWAY_OBS_REQUEST_LOG_SAMPLE_RATE`
+  - optional
+  - default: `0.2`
+  - sampled request completion logs (0.0 to 1.0), always logs 5xx
+- `RESONANTIA_OTEL_EXPORTER_OTLP_ENDPOINT`
+  - optional
+  - no default (disabled when unset)
+  - OTLP gRPC endpoint for trace export (LGTM/Tempo compatible)
+- `RESONANTIA_OTEL_SERVICE_NAME`
+  - optional
+  - default: `resonantia-gateway`
+  - OTEL service name resource attribute
+- `RESONANTIA_OTEL_TRACE_SAMPLE_RATE`
+  - optional
+  - default: `0.1`
+  - OTEL trace sampling ratio (0.0 to 1.0)
+
+## Observability + Privacy
+
+Gateway observability is designed to support production incident response without
+capturing raw STTP payloads or message bodies in request logs.
+
+- Adds/propagates `x-request-id` for every request/response pair
+- Accepts `traceparent` and uses it for distributed trace parenting
+- Emits sampled request outcome logs with method/path/status/duration only
+- Exports traces to OTLP only when `RESONANTIA_OTEL_EXPORTER_OTLP_ENDPOINT` is set
 
 ## Run
 
