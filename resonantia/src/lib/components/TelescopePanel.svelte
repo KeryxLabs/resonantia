@@ -190,19 +190,21 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 8px;
+    gap: 7px;
+    width: 62px;
     pointer-events: none;
   }
 
   .negative-layer-btn {
-    width: 30px;
-    height: 30px;
+    width: 31px;
+    height: 31px;
     border-radius: 999px;
     background: rgba(12, 15, 22, 0.9);
     border: 0.5px solid rgba(132, 172, 226, 0.32);
     display: flex;
     align-items: center;
     justify-content: center;
+    margin-left: 33px;
     padding: 0;
     cursor: pointer;
     pointer-events: all;
@@ -266,8 +268,8 @@
   }
 
   .telescope-icon {
-    width: 36px;
-    height: 36px;
+    width: 38px;
+    height: 38px;
     border-radius: 999px;
     background: rgba(14, 10, 30, 0.9);
     border: 0.5px solid rgba(160, 140, 255, 0.35);
@@ -276,6 +278,8 @@
     justify-content: center;
     cursor: pointer;
     pointer-events: all;
+    margin-left: 5px;
+    margin-top: -2px;
     transition: border-color 0.2s, background 0.2s, opacity 0.16s;
     padding: 0;
   }
@@ -467,6 +471,16 @@
     .telescope-shell {
       left: max(12px, calc(var(--safe-left) + 10px));
       bottom: max(12px, calc(var(--safe-bottom) + 10px));
+      width: 58px;
+    }
+
+    .negative-layer-btn {
+      margin-left: 27px;
+    }
+
+    .telescope-icon {
+      margin-left: 4px;
+      margin-top: -1px;
     }
 
     .telescope-stage {

@@ -11,6 +11,7 @@
   import SettingsDrawer from './components/SettingsDrawer.svelte';
   import WalkthroughGuide from './components/WalkthroughGuide.svelte';
   import AdventureOnboarding from './components/AdventureOnboarding.svelte';
+  import AlkahestPanel from './components/AlkahestPanel.svelte';
   import { getCloudAuthStatus, getGatewayAuthToken, signOutCloud, redirectToCloudSignIn, getCloudAccount } from './cloudAuth';
   import { getGatewayBaseUrl as getManagedGatewayBaseUrl } from './config';
   import { resonantiaClient } from './resonantiaClient';
@@ -93,6 +94,7 @@
   let sessionById = new Map<string, GraphSessionDto>();
   let selectedSessionNodes: GraphNodeDto[] = [];
   let selectedSessionTopMoments: GraphNodeDto[] = [];
+  let alkahestSessionOptions: GraphSessionDto[] = [];
   const ONBOARDING_DISMISSED_KEY = 'resonantia:onboarding-dismissed:v1';
   const ADVENTURE_COMPLETED_KEY  = 'resonantia:adventure-completed:v1';
   const ADVENTURE_SESSION_FALLBACK = 'first-user-experience-resonantia';
@@ -458,6 +460,16 @@
     ? new Map(graph.sessions.map((session) => [session.id, session]))
     : new Map();
 
+  $: alkahestSessionOptions = graph
+    ? graph.sessions
+        .map((session) => ({
+          ...session,
+          id: canonicalSessionId(session),
+          label: sessionTitle(session),
+        }))
+        .sort((left, right) => right.lastModified.localeCompare(left.lastModified))
+    : [];
+
   $: {
     if (!graph || !selectedSession) {
       selectedSessionNodes = [];
@@ -634,7 +646,7 @@
   $: walkthroughCompact = onboardingOpen
     && walkthroughStep !== 'intro'
     && walkthroughStep !== 'complete'
-    && (settingsOpen || calibrateOpen || composeOpen || telescopeCameraEngaged);
+    && (settingsOpen || calibrateOpen || composeOpen || cameraOverlayEngaged);
 
   $: if (!onboardingOpen) {
     walkthroughStepSatisfied = false;
@@ -1356,6 +1368,16 @@
     composeOpen = false;
     calibrateOpen = false;
     settingsOpen = false;
+
+    if (alkahestCameraBefore) {
+      camX = targetCamX = alkahestCameraBefore.x;
+      camY = targetCamY = alkahestCameraBefore.y;
+      camScale = targetCamScale = alkahestCameraBefore.scale;
+    }
+
+    alkahestOpen = false;
+    alkahestPhase = 'idle';
+    alkahestCameraBefore = null;
     closeRenameSessionDialog();
   }
 
@@ -1396,7 +1418,7 @@
   }
 
   function drawEdges() {
-    if (telescopeCameraEngaged || !graph || level > 0) return;
+    if (cameraOverlayEngaged || !graph || level > 0) return;
     const graphData = graph;
     graphData.edges.forEach(e => {
       const sourceSession = sessionById.get(e.source);
@@ -1443,7 +1465,7 @@
   }
 
   function drawSessions() {
-    if (telescopeCameraEngaged || !graph) return;
+    if (cameraOverlayEngaged || !graph) return;
 
     graph.sessions.forEach(s => {
       const sp      = sessionRenderPos(s);
@@ -1495,7 +1517,7 @@
   }
 
   function drawWaveBoundary() {
-    if (telescopeCameraEngaged || level !== 1 || !selectedSession) return;
+    if (cameraOverlayEngaged || level !== 1 || !selectedSession) return;
     const sp = sessionPos[selectedSession.id];
     if (!sp) return;
     const av = sessionAvec(selectedSession);
@@ -1521,7 +1543,7 @@
   }
 
   function drawWaveThreads() {
-    if (telescopeCameraEngaged || level !== 1 || !selectedSession || !graph) return;
+    if (cameraOverlayEngaged || level !== 1 || !selectedSession || !graph) return;
     const session = selectedSession;
     const sp = sessionPos[session.id];
     if (!sp) return;
@@ -1581,7 +1603,7 @@
   }
 
   function drawNodes() {
-    if (telescopeCameraEngaged || !graph || level < 1 || !selectedSession) return;
+    if (cameraOverlayEngaged || !graph || level < 1 || !selectedSession) return;
     const sessionNodes = selectedSessionNodes;
 
     sessionNodes.forEach(n => {
@@ -1627,7 +1649,7 @@
   }
 
   function drawWaveLabels() {
-    if (telescopeCameraEngaged || level !== 1 || !graph || !selectedSession) return;
+    if (cameraOverlayEngaged || level !== 1 || !graph || !selectedSession) return;
     const session = selectedSession;
     const sp = sessionPos[session.id];
     if (!sp) return;
@@ -1816,7 +1838,7 @@
   }
 
   function drawHints() {
-    if (loading || telescopeCameraEngaged) return;
+    if (loading || cameraOverlayEngaged) return;
     ctx.textAlign = 'center';
     ctx.font      = `10px ${FONT_MONO}`;
     const fade = 0.12 + Math.sin(t * 0.7) * 0.06;
@@ -1833,7 +1855,7 @@
   }
 
   function drawNegativeLayerVignette() {
-    if (!negativeLayerActive || level !== 0 || telescopeCameraEngaged) return;
+    if (!negativeLayerActive || level !== 0 || cameraOverlayEngaged) return;
 
     const centerX = W() / 2;
     const centerY = H() / 2;
@@ -1867,6 +1889,7 @@
       || dragging
       || telescopeDragY !== null
       || telescopePhase !== 'idle'
+      || alkahestPhase !== 'idle'
       || cameraIsMoving();
 
     return highActivity ? ACTIVE_FRAME_STEP_MS : IDLE_FRAME_STEP_MS;
@@ -1911,7 +1934,7 @@
     camY     += (targetCamY     - camY)     * LERP;
     camScale += (targetCamScale - camScale) * LERP;
 
-    const driftEnabled = negativeLayerActive && level === 0 && !telescopeCameraEngaged && !dragging;
+    const driftEnabled = negativeLayerActive && level === 0 && !cameraOverlayEngaged && !dragging;
     const driftPx = compactViewport() ? 7.5 : 10.5;
     const targetDriftX = driftEnabled
       ? Math.sin(t * 0.16 + 0.8) * (driftPx / Math.max(camScale, 0.0001))
@@ -1929,6 +1952,7 @@
     }
 
     settleTelescopeTransition();
+    settleAlkahestTransition();
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1995,7 +2019,14 @@
       targetCamScale = focus.scale;
     }
 
-    if (!telescopeCameraEngaged && level === 0) {
+    if (alkahestPhase === 'entering' && alkahestCameraBefore) {
+      const focus = alkahestFocusTargetFrom(alkahestCameraBefore, level);
+      targetCamX = focus.x;
+      targetCamY = focus.y;
+      targetCamScale = focus.scale;
+    }
+
+    if (!cameraOverlayEngaged && level === 0) {
       camX = targetCamX = W() / 2;
       camY = targetCamY = H() / 2;
       camScale = targetCamScale = constellationLayerScale();
@@ -2004,7 +2035,7 @@
 
   // ── Pointer events ─────────────────────────────────────────────
   function onPointerDown(e: PointerEvent) {
-    if (telescopeCameraEngaged || level !== 0) return;
+    if (cameraOverlayEngaged || level !== 0) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     noteInteraction();
@@ -2029,7 +2060,7 @@
 
   function onPointerMove(e: PointerEvent) {
     if (activePanPointerId !== null && e.pointerId !== activePanPointerId) return;
-    if (telescopeCameraEngaged || !dragging || level !== 0) return;
+    if (cameraOverlayEngaged || !dragging || level !== 0) return;
 
     noteInteraction();
     const dx = e.clientX - dragStart.x;
@@ -2048,7 +2079,7 @@
     activePanPointerId = null;
     dragging = false;
     noteInteraction();
-    if (telescopeCameraEngaged) return;
+    if (cameraOverlayEngaged) return;
     if (didDrag) return;
 
     const { x: sx, y: sy } = canvasXY(e);
@@ -2630,6 +2661,7 @@
   const TELESCOPE_CAMERA_SCALE_EPSILON = 0.035;
 
   type TelescopePhase = 'idle' | 'entering' | 'exiting';
+  type AlkahestPhase = 'idle' | 'entering' | 'exiting';
   type CameraState = { x: number; y: number; scale: number };
 
   let telescopeOpen = false;
@@ -2836,8 +2868,74 @@
     }
   }
 
+  function alkahestAnchorScreenPoint() {
+    const compact = W() <= 520;
+    return {
+      x: W() / 2 - (compact ? 8 : 14),
+      y: H() / 2 + (compact ? 16 : 22),
+    };
+  }
+
+  function alkahestFocusScaleFor(levelValue: number, cameraScale: number) {
+    const compact = compactViewport();
+
+    if (levelValue === 1) {
+      return Math.max(compact ? 1.42 : 1.64, Math.min(TELESCOPE_WAVE_SCALE, cameraScale * (compact ? 0.63 : 0.69)));
+    }
+
+    return Math.max(compact ? 0.82 : 0.9, Math.min(TELESCOPE_CONSTELLATION_SCALE, cameraScale * (compact ? 0.8 : 0.85)));
+  }
+
+  function alkahestFocusTargetFrom(camera: CameraState, levelValue: number) {
+    const anchor = alkahestAnchorScreenPoint();
+    const world = worldAtScreenForCamera(anchor.x, anchor.y, camera);
+    const scale = alkahestFocusScaleFor(levelValue, camera.scale);
+    return {
+      x: world.x,
+      y: world.y,
+      scale,
+    };
+  }
+
+  function beginAlkahestEnterTransition() {
+    const startCamera = { x: camX, y: camY, scale: camScale };
+    alkahestCameraBefore = startCamera;
+    const focus = alkahestFocusTargetFrom(startCamera, level);
+    targetCamX = focus.x;
+    targetCamY = focus.y;
+    targetCamScale = focus.scale;
+    alkahestPhase = 'entering';
+  }
+
+  function beginAlkahestExitTransition() {
+    alkahestOpen = false;
+
+    if (!alkahestCameraBefore) {
+      alkahestPhase = 'idle';
+      return;
+    }
+
+    targetCamX = alkahestCameraBefore.x;
+    targetCamY = alkahestCameraBefore.y;
+    targetCamScale = alkahestCameraBefore.scale;
+    alkahestPhase = 'exiting';
+  }
+
+  function settleAlkahestTransition() {
+    if (alkahestPhase === 'entering' && cameraAtTarget()) {
+      alkahestPhase = 'idle';
+      alkahestOpen = true;
+      return;
+    }
+
+    if (alkahestPhase === 'exiting' && cameraAtTarget()) {
+      alkahestPhase = 'idle';
+      alkahestCameraBefore = null;
+    }
+  }
+
   function toggleNegativeLayer() {
-    if (level !== 0 || telescopeCameraEngaged) {
+    if (level !== 0 || cameraOverlayEngaged) {
       return;
     }
 
@@ -2847,7 +2945,7 @@
   }
 
   function openTelescope() {
-    if (!telescopeCanAccess || telescopeCameraEngaged) {
+    if (!telescopeCanAccess || cameraOverlayEngaged) {
       return;
     }
 
@@ -2978,6 +3076,543 @@
   $: telescopeTimelineSessions = listTelescopeSessions(graph?.sessions ?? [], TELESCOPE_RANGES[telescopeRangeIndex].days);
   $: if (!telescopeCanAccess && telescopeCameraEngaged && telescopePhase !== 'exiting') {
     beginTelescopeExitTransition();
+  }
+  $: if (level > 1 && alkahestCameraEngaged && alkahestPhase !== 'exiting') {
+    beginAlkahestExitTransition();
+  }
+
+  type AlkahestScope = 'session' | 'sessions' | 'timeline' | 'resonance';
+  type AlkahestMode = 'export' | 'distill' | 'both';
+  type ResonanceDim = 'stability' | 'friction' | 'logic' | 'autonomy';
+
+  type AlkahestScopeScan = {
+    nodes: NodeDto[];
+    modelNodes: NodeDto[];
+    clipped: boolean;
+    sessionCount: number;
+    windowLabel: string;
+  };
+
+  type AlkahestBundle = {
+    kind: 'resonantia-alkahest-bundle';
+    version: '1.0';
+    exportedAt: string;
+    scope: {
+      type: AlkahestScope;
+      sessionId?: string;
+      sessionIds?: string[];
+      timelineDays?: number;
+      resonanceDim?: ResonanceDim;
+      psiMin?: number;
+    };
+    stats: {
+      nodeCount: number;
+      sessionCount: number;
+      windowLabel: string;
+      clippedForModel: boolean;
+    };
+    model: {
+      provider: ModelProvider;
+      promptIncluded: boolean;
+      targetSessionId: string;
+    };
+    nodes: Array<{
+      sessionId: string;
+      timestamp: string;
+      tier: string;
+      psi: number;
+      syncKey: string;
+      syntheticId: string;
+      raw: string;
+    }>;
+    superNode: string | null;
+  };
+
+  const ALKAHEST_MODEL_NODE_LIMIT = 140;
+  const ALKAHEST_DISTILL_CHAR_BUDGET = 220_000;
+  const ALKAHEST_DEFAULT_PROMPT = [
+    'You are the Alkahest memory distiller for STTP.',
+    'Read the full source nodes and extract their most durable meaning into one super node.',
+    'Preserve chronology, unresolved threads, and emotional/decision context.',
+    'Do not summarize loosely. Encode with concrete technical detail and confidence-weighted fields.',
+    'Return exactly one valid STTP node and nothing else.',
+  ].join('\n');
+  const ALKAHEST_TIMELINE_OPTIONS = TELESCOPE_RANGES.map((range) => ({
+    label: range.label,
+    days: range.days,
+  }));
+
+  let alkahestOpen = false;
+  let alkahestScope: AlkahestScope = 'session';
+  let alkahestMode: AlkahestMode = 'both';
+  let alkahestSessionId = '';
+  let alkahestSessionIds: string[] = [];
+  let alkahestTimelineDays = 30;
+  let alkahestResonanceDim: ResonanceDim = 'logic';
+  let alkahestPsiMin = 2.2;
+  let alkahestPrompt = '';
+  let alkahestTargetSessionId = '';
+  let alkahestStoreDistilledNode = true;
+
+  let alkahestLoading = false;
+  let alkahestScopeScanning = false;
+  let alkahestError: string | null = null;
+  let alkahestStatus: string | null = null;
+  let alkahestPreflightNodeCount = 0;
+  let alkahestPreflightSessionCount = 0;
+  let alkahestPreflightWindowLabel = 'scope not scanned yet';
+  let alkahestPreflightClipped = false;
+  let alkahestPreflightLastScannedAt: string | null = null;
+  let alkahestSuperNodePreview = '';
+  let alkahestPhase: AlkahestPhase = 'idle';
+  let alkahestCameraBefore: CameraState | null = null;
+
+  $: alkahestCameraEngaged = alkahestOpen || alkahestPhase !== 'idle';
+  $: cameraOverlayEngaged = telescopeCameraEngaged || alkahestCameraEngaged;
+
+  function defaultAlkahestTargetSessionId() {
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+    return `alkahest-${year}-${month}`;
+  }
+
+  function shouldDistillForAlkahestMode(mode: AlkahestMode) {
+    return mode === 'distill' || mode === 'both';
+  }
+
+  function shouldExportForAlkahestMode(mode: AlkahestMode) {
+    return mode === 'export' || mode === 'both';
+  }
+
+  function dominantResonanceDim(node: NodeDto): ResonanceDim {
+    const avec = node.userAvec;
+    let bestDim: ResonanceDim = 'stability';
+    let bestValue = avec.stability;
+
+    if (avec.friction > bestValue) {
+      bestDim = 'friction';
+      bestValue = avec.friction;
+    }
+    if (avec.logic > bestValue) {
+      bestDim = 'logic';
+      bestValue = avec.logic;
+    }
+    if (avec.autonomy > bestValue) {
+      bestDim = 'autonomy';
+    }
+
+    return bestDim;
+  }
+
+  function alkahestWindowLabel(nodes: NodeDto[]) {
+    if (nodes.length === 0) {
+      return 'no nodes matched this scope';
+    }
+
+    const sorted = [...nodes].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    const firstTs = Date.parse(sorted[0].timestamp);
+    const lastTs = Date.parse(sorted[sorted.length - 1].timestamp);
+
+    const firstLabel = Number.isFinite(firstTs)
+      ? new Date(firstTs).toLocaleDateString([], { month: 'short', day: 'numeric' })
+      : sorted[0].timestamp;
+    const lastLabel = Number.isFinite(lastTs)
+      ? new Date(lastTs).toLocaleDateString([], { month: 'short', day: 'numeric' })
+      : sorted[sorted.length - 1].timestamp;
+
+    if (firstLabel === lastLabel) {
+      return firstLabel;
+    }
+
+    return `${firstLabel} → ${lastLabel}`;
+  }
+
+  async function fetchAlkahestSourceNodes(): Promise<NodeDto[]> {
+    const requestedSession = alkahestScope === 'session'
+      ? (alkahestSessionId.trim() || canonicalSessionId(selectedSession))
+      : '';
+    const requestedSessionIds = alkahestScope === 'sessions'
+      ? Array.from(new Set(alkahestSessionIds.map((id) => id.trim()).filter(Boolean)))
+      : [];
+
+    if (alkahestScope === 'session' && !requestedSession) {
+      throw new Error('choose a session before running Alkahest session scope');
+    }
+
+    if (alkahestScope === 'sessions' && requestedSessionIds.length === 0) {
+      throw new Error('choose at least one session for multi-session scope');
+    }
+
+    if (requestedSession) {
+      alkahestSessionId = requestedSession;
+    }
+
+    if (requestedSessionIds.length > 0) {
+      alkahestSessionIds = requestedSessionIds;
+    }
+
+    if (alkahestScope === 'sessions') {
+      const mergedNodes = new Map<string, NodeDto>();
+      for (const requestedId of requestedSessionIds) {
+        const listed = await resonantiaClient.listNodes(400, requestedId);
+        if (listed.transport) {
+          lastTransportLabel = listed.transport;
+        }
+        applySourceBadge(listed.source, listed.transport ?? lastTransportLabel);
+        for (const node of listed.nodes) {
+          const dedupeKey = `${node.sessionId}|${node.syntheticId}|${node.syncKey}|${node.timestamp}`;
+          if (!mergedNodes.has(dedupeKey)) {
+            mergedNodes.set(dedupeKey, node);
+          }
+        }
+      }
+      return [...mergedNodes.values()];
+    }
+
+    const listed = await resonantiaClient.listNodes(400, requestedSession || undefined);
+    if (listed.transport) {
+      lastTransportLabel = listed.transport;
+    }
+    applySourceBadge(listed.source, listed.transport ?? lastTransportLabel);
+    return listed.nodes;
+  }
+
+  function filterAlkahestScopeNodes(nodes: NodeDto[]): NodeDto[] {
+    const sessionId = alkahestSessionId.trim();
+    const sessionIds = new Set(alkahestSessionIds.map((id) => id.trim()).filter(Boolean));
+
+    return nodes.filter((node) => {
+      if (alkahestScope === 'session') {
+        return sessionId ? node.sessionId === sessionId : false;
+      }
+
+      if (alkahestScope === 'sessions') {
+        return sessionIds.has(node.sessionId);
+      }
+
+      if (alkahestScope === 'timeline') {
+        if (alkahestTimelineDays >= Number.MAX_SAFE_INTEGER) {
+          return true;
+        }
+        return daysAgoFromTimestamp(node.timestamp) <= alkahestTimelineDays;
+      }
+
+      const dominant = dominantResonanceDim(node);
+      return dominant === alkahestResonanceDim && node.psi >= alkahestPsiMin;
+    });
+  }
+
+  function buildAlkahestDistillInput(nodes: NodeDto[], scan: AlkahestScopeScan) {
+    const prime = (alkahestPrompt.trim() || ALKAHEST_DEFAULT_PROMPT).trim();
+    const base = [
+      prime,
+      '',
+      `scope_type: ${alkahestScope}`,
+      `scope_node_count: ${scan.nodes.length}`,
+      `scope_session_count: ${scan.sessionCount}`,
+      `scope_window: ${scan.windowLabel}`,
+      `clipped_for_model: ${scan.clipped ? 'true' : 'false'}`,
+      '',
+      'Source nodes follow.',
+      'Use them as canonical memory and output one STTP node only.',
+      '',
+    ].join('\n');
+
+    let consumed = base.length;
+    const chunks: string[] = [base];
+
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
+      const chunk = [
+        `--- node ${index + 1} ---`,
+        `session_id: ${node.sessionId}`,
+        `timestamp: ${node.timestamp}`,
+        `tier: ${node.tier}`,
+        `psi: ${node.psi.toFixed(4)}`,
+        'raw:',
+        node.raw,
+        '',
+      ].join('\n');
+
+      if (consumed + chunk.length > ALKAHEST_DISTILL_CHAR_BUDGET) {
+        break;
+      }
+
+      chunks.push(chunk);
+      consumed += chunk.length;
+    }
+
+    chunks.push('Return only one valid STTP node. No commentary.');
+    return chunks.join('\n');
+  }
+
+  function buildAlkahestBundle(scan: AlkahestScopeScan, superNode: string | null): AlkahestBundle {
+    const sessionId = alkahestSessionId.trim();
+    const sessionIds = Array.from(new Set(alkahestSessionIds.map((id) => id.trim()).filter(Boolean)));
+    const targetSessionId = alkahestTargetSessionId.trim() || defaultAlkahestTargetSessionId();
+
+    return {
+      kind: 'resonantia-alkahest-bundle',
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      scope: {
+        type: alkahestScope,
+        ...(alkahestScope === 'session' ? { sessionId } : {}),
+        ...(alkahestScope === 'sessions' ? { sessionIds } : {}),
+        ...(alkahestScope === 'timeline' ? { timelineDays: alkahestTimelineDays } : {}),
+        ...(alkahestScope === 'resonance'
+          ? {
+            resonanceDim: alkahestResonanceDim,
+            psiMin: alkahestPsiMin,
+          }
+          : {}),
+      },
+      stats: {
+        nodeCount: scan.nodes.length,
+        sessionCount: scan.sessionCount,
+        windowLabel: scan.windowLabel,
+        clippedForModel: scan.clipped,
+      },
+      model: {
+        provider: modelProvider,
+        promptIncluded: shouldDistillForAlkahestMode(alkahestMode),
+        targetSessionId,
+      },
+      nodes: scan.nodes.map((node) => ({
+        sessionId: node.sessionId,
+        timestamp: node.timestamp,
+        tier: node.tier,
+        psi: node.psi,
+        syncKey: node.syncKey,
+        syntheticId: node.syntheticId,
+        raw: node.raw,
+      })),
+      superNode,
+    };
+  }
+
+  function downloadAlkahestBundle(bundle: AlkahestBundle) {
+    if (typeof document === 'undefined') {
+      throw new Error('json export is unavailable in this runtime');
+    }
+
+    const stamp = bundle.exportedAt.slice(0, 10);
+    const fileName = `alkahest-${bundle.scope.type}-${stamp}.json`;
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = href;
+    anchor.download = fileName;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(href);
+  }
+
+  async function collectAlkahestScopeScan(): Promise<AlkahestScopeScan> {
+    const sourceNodes = await fetchAlkahestSourceNodes();
+    const filtered = filterAlkahestScopeNodes(sourceNodes).sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    const clipped = filtered.length > ALKAHEST_MODEL_NODE_LIMIT;
+    const modelNodes = clipped ? filtered.slice(-ALKAHEST_MODEL_NODE_LIMIT) : filtered;
+    const sessionCount = new Set(filtered.map((node) => node.sessionId)).size;
+    const windowLabel = alkahestWindowLabel(filtered);
+
+    alkahestPreflightNodeCount = filtered.length;
+    alkahestPreflightSessionCount = sessionCount;
+    alkahestPreflightWindowLabel = windowLabel;
+    alkahestPreflightClipped = clipped;
+    alkahestPreflightLastScannedAt = new Date().toISOString();
+
+    return {
+      nodes: filtered,
+      modelNodes,
+      clipped,
+      sessionCount,
+      windowLabel,
+    };
+  }
+
+  function primeAlkahestDefaults() {
+    if (!alkahestSessionId.trim() && selectedSession) {
+      alkahestSessionId = canonicalSessionId(selectedSession);
+    }
+    if (alkahestSessionIds.length === 0 && selectedSession) {
+      alkahestSessionIds = [canonicalSessionId(selectedSession)];
+    }
+    if (!alkahestTargetSessionId.trim()) {
+      alkahestTargetSessionId = defaultAlkahestTargetSessionId();
+    }
+    if (!alkahestPrompt.trim()) {
+      alkahestPrompt = ALKAHEST_DEFAULT_PROMPT;
+    }
+  }
+
+  function toggleAlkahestOpen() {
+    if (alkahestCameraEngaged) {
+      closeAlkahestPanel();
+      return;
+    }
+
+    if (level > 1 || cameraOverlayEngaged) {
+      return;
+    }
+
+    noteInteraction();
+    closeTransientUi();
+    composeModeMenuOpen = false;
+    syncDetailAutoOpen = false;
+    syncDetailHover = false;
+
+    primeAlkahestDefaults();
+    beginAlkahestEnterTransition();
+  }
+
+  function closeAlkahestPanel() {
+    if (!alkahestCameraEngaged) {
+      alkahestOpen = false;
+      alkahestPhase = 'idle';
+      alkahestCameraBefore = null;
+      return;
+    }
+
+    noteInteraction();
+    beginAlkahestExitTransition();
+  }
+
+  function resetAlkahestFlow() {
+    alkahestScope = 'session';
+    alkahestMode = 'both';
+    alkahestSessionId = selectedSession ? canonicalSessionId(selectedSession) : '';
+    alkahestSessionIds = selectedSession ? [canonicalSessionId(selectedSession)] : [];
+    alkahestTimelineDays = 30;
+    alkahestResonanceDim = 'logic';
+    alkahestPsiMin = 2.2;
+    alkahestPrompt = ALKAHEST_DEFAULT_PROMPT;
+    alkahestTargetSessionId = defaultAlkahestTargetSessionId();
+    alkahestStoreDistilledNode = true;
+
+    alkahestError = null;
+    alkahestStatus = null;
+    alkahestPreflightNodeCount = 0;
+    alkahestPreflightSessionCount = 0;
+    alkahestPreflightWindowLabel = 'scope not scanned yet';
+    alkahestPreflightClipped = false;
+    alkahestPreflightLastScannedAt = null;
+    alkahestSuperNodePreview = '';
+
+    closeAlkahestPanel();
+  }
+
+  async function scanAlkahestScope() {
+    if (alkahestLoading || alkahestScopeScanning) {
+      return;
+    }
+
+    alkahestScopeScanning = true;
+    alkahestError = null;
+    alkahestStatus = null;
+    try {
+      const scan = await collectAlkahestScopeScan();
+      alkahestStatus = `scope ready · ${scan.nodes.length} nodes`;
+    } catch (err) {
+      alkahestError = String(err);
+    } finally {
+      alkahestScopeScanning = false;
+    }
+  }
+
+  async function runAlkahestFlow() {
+    if (alkahestLoading || alkahestScopeScanning) {
+      return;
+    }
+
+    alkahestLoading = true;
+    alkahestError = null;
+    alkahestStatus = null;
+
+    try {
+      const scan = await collectAlkahestScopeScan();
+      if (scan.nodes.length === 0) {
+        throw new Error('no nodes matched this Alkahest scope');
+      }
+
+      let superNode: string | null = null;
+      let storeStatus: string | null = null;
+
+      if (shouldDistillForAlkahestMode(alkahestMode)) {
+        const targetSessionId = alkahestTargetSessionId.trim() || defaultAlkahestTargetSessionId();
+        alkahestTargetSessionId = targetSessionId;
+
+        const content = buildAlkahestDistillInput(scan.modelNodes, scan);
+        const encodedNode = await runManagedAiWithTokenRetry(() =>
+          resonantiaClient.encodeCompose({
+            sessionId: targetSessionId,
+            messages: [
+              {
+                role: 'user',
+                content,
+              },
+            ],
+          })
+        );
+
+        superNode = encodedNode.trim();
+        alkahestSuperNodePreview = superNode;
+
+        if (alkahestStoreDistilledNode) {
+          const stored = await resonantiaClient.storeContext({
+            node: superNode,
+            sessionId: targetSessionId,
+          });
+          if (!stored.valid) {
+            throw new Error(stored.validationError ?? 'distilled node failed STTP validation');
+          }
+
+          const upsertStatus = stored.upsertStatus ?? (stored.duplicateSkipped ? 'duplicate' : 'stored');
+          storeStatus = stored.duplicateSkipped ? 'duplicate skipped' : upsertStatus;
+          await loadGraph();
+        }
+      }
+
+      if (shouldExportForAlkahestMode(alkahestMode)) {
+        const bundle = buildAlkahestBundle(scan, superNode);
+        downloadAlkahestBundle(bundle);
+      }
+
+      const outcomes: string[] = [];
+      if (shouldDistillForAlkahestMode(alkahestMode)) {
+        outcomes.push('super node distilled');
+      }
+      if (storeStatus) {
+        outcomes.push(`stored ${storeStatus}`);
+      }
+      if (shouldExportForAlkahestMode(alkahestMode)) {
+        outcomes.push('bundle exported');
+      }
+
+      alkahestStatus = outcomes.join(' · ') || 'alkahest complete';
+    } catch (err) {
+      alkahestError = String(err);
+    } finally {
+      alkahestLoading = false;
+    }
+  }
+
+  async function copyAlkahestSuperNode() {
+    const source = alkahestSuperNodePreview.trim();
+    if (!source) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(source);
+      alkahestStatus = 'super node copied';
+      alkahestError = null;
+    } catch (err) {
+      alkahestError = String(err);
+    }
   }
 
   type CalibrationVector = {
@@ -4018,10 +4653,10 @@
     on:pointercancel={onPointerCancel}
     on:lostpointercapture={onPointerCancel}
     class:grabbing={dragging}
-    class:telescope-open={telescopeCameraEngaged}
+    class:camera-overlay-open={cameraOverlayEngaged}
   ></canvas>
 
-  <nav class="navbar" class:faded={telescopeCameraEngaged}>
+  <nav class="navbar" class:faded={cameraOverlayEngaged}>
     <div class="nav-left">
       {#if level > 0}
         <button class="back-btn" on:click={level === 2 ? surfaceToWave : surfaceToConstellation}>
@@ -4081,12 +4716,48 @@
   />
 
   <ComposeLauncher
-    faded={telescopeCameraEngaged}
+    faded={cameraOverlayEngaged}
     hidden={composeOpen}
     menuOpen={composeModeMenuOpen}
     on:toggle={toggleComposeModeMenu}
     on:live={openComposeLive}
     on:importare={openComposeImportare}
+  />
+
+  <AlkahestPanel
+    hidden={telescopeCameraEngaged || level > 1}
+    open={alkahestOpen}
+    cameraEngaged={alkahestCameraEngaged}
+    phase={alkahestPhase}
+    loading={alkahestLoading}
+    scopeScanning={alkahestScopeScanning}
+    error={alkahestError}
+    status={alkahestStatus}
+    bind:scope={alkahestScope}
+    bind:mode={alkahestMode}
+    bind:sessionId={alkahestSessionId}
+    bind:sessionIds={alkahestSessionIds}
+    sessions={alkahestSessionOptions}
+    bind:timelineDays={alkahestTimelineDays}
+    timelineOptions={ALKAHEST_TIMELINE_OPTIONS}
+    bind:resonanceDim={alkahestResonanceDim}
+    bind:psiMin={alkahestPsiMin}
+    bind:prompt={alkahestPrompt}
+    bind:targetSessionId={alkahestTargetSessionId}
+    bind:storeDistilledNode={alkahestStoreDistilledNode}
+    preflightNodeCount={alkahestPreflightNodeCount}
+    preflightWindowLabel={alkahestPreflightWindowLabel}
+    preflightSessionCount={alkahestPreflightSessionCount}
+    preflightClipped={alkahestPreflightClipped}
+    preflightLastScannedAt={alkahestPreflightLastScannedAt}
+    modelProvider={modelProvider}
+    superNodePreview={alkahestSuperNodePreview}
+    toggleOpen={toggleAlkahestOpen}
+    closePanel={closeAlkahestPanel}
+    cancelAndReset={resetAlkahestFlow}
+    scanScope={scanAlkahestScope}
+    runAlkahest={runAlkahestFlow}
+    copySuperNode={copyAlkahestSuperNode}
   />
 
   <AdventureOnboarding
@@ -4301,7 +4972,7 @@
     display: block;
   }
   canvas.grabbing { cursor: grabbing; }
-  canvas.telescope-open { pointer-events: none; }
+  canvas.camera-overlay-open { pointer-events: none; }
 
   .navbar {
     position: absolute;
