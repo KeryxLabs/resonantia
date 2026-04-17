@@ -5,17 +5,53 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Resonantia — Unlock yourself</title>
   <meta name="description" content="Resonantia attempts to find the you that gets lost in conversation. A wave, moment, collapse, resonate and weave it all together." />
+  <link rel="canonical" href="https://resonantia.me/" />
+  <meta name="theme-color" content="#08090c" />
   <meta property="og:title" content="Resonantia — Unlock yourself" />
   <meta property="og:description" content="Resonantia attempts to find the you that gets lost in conversation." />
-  <meta property="og:url" content="https://resonantia.me" />
-  <link
-    rel="icon"
-    type="image/svg+xml"
-    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2308090c'/%3E%3Ccircle cx='32' cy='32' r='20' fill='%23ffffff' opacity='0.06'/%3E%3Ccircle cx='32' cy='32' r='14' fill='%235b9bd5' opacity='0.16'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%235b9bd5' opacity='0.3'/%3E%3Ccircle cx='32' cy='32' r='6.5' fill='%236aa9e6'/%3E%3Ccircle cx='27.5' cy='27' r='2.5' fill='%23e8f3ff' opacity='0.82'/%3E%3C/svg%3E"
-  />
+  <meta property="og:url" content="https://resonantia.me/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Resonantia" />
+  <meta property="og:image" content="https://resonantia.me/resonantia_logo_orb.svg" />
+  <meta property="og:image:alt" content="Resonantia orb logo" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@resonantia" />
+  <meta name="twitter:title" content="Resonantia — Unlock yourself" />
+  <meta name="twitter:description" content="Resonantia attempts to find the you that gets lost in conversation." />
+  <meta name="twitter:image" content="https://resonantia.me/resonantia_logo_orb.svg" />
+  <meta name="twitter:image:alt" content="Resonantia orb logo" />
+  <link rel="icon" type="image/svg+xml" href="/resonantia_logo_orb.svg" />
+  <link rel="apple-touch-icon" href="/resonantia_logo_orb.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Departure+Mono&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&display=swap" rel="stylesheet" />
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "name": "Resonantia",
+          "url": "https://resonantia.me/",
+          "logo": "https://resonantia.me/resonantia_logo_orb.svg"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "name": "Resonantia",
+          "applicationCategory": "LifestyleApplication",
+          "operatingSystem": "Windows, macOS, Linux, iOS, Android, Web",
+          "url": "https://resonantia.me/",
+          "description": "Resonantia maps reflective conversations into a navigable constellation of waves and moments.",
+          "image": "https://resonantia.me/resonantia_logo_orb.svg",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          }
+        }
+      ]
+    }
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -24,8 +60,8 @@
       --surface:     #0f1117;
       --border:      rgba(255,255,255,0.07);
       --text:        rgba(255,255,255,0.85);
-      --muted:       rgba(255,255,255,0.35);
-      --dim:         rgba(255,255,255,0.12);
+      --muted:       rgba(255,255,255,0.56);
+      --dim:         rgba(255,255,255,0.34);
 
       --stability:   #e8e8eb;
       --friction:    #e9943a;
@@ -169,7 +205,7 @@
       transform: translateX(-50%);
       font-size: 9px;
       letter-spacing: 0.14em;
-      color: var(--dim);
+      color: rgba(255,255,255,0.54);
       text-transform: uppercase;
       animation: pulse 3s ease-in-out infinite;
     }
@@ -187,7 +223,17 @@
 
     .orb-wrap {
       position: relative;
-      margin-bottom: 64px;
+      margin-bottom: 36px;
+      background: rgba(13, 15, 18, 0.6);
+      border: 0.5px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 26px 20px 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
     }
 
     .orb-wrap.interactive {
@@ -206,11 +252,105 @@
     }
 
     .orb-hint {
-      margin-top: 16px;
+      margin-top: 8px;
       font-size: 9px;
       letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: rgba(255,255,255,0.24);
+      color: rgba(255,255,255,0.5);
+    }
+
+    .orb-controls {
+      width: min(460px, calc(100vw - 88px));
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .orb-ctrl-row {
+      display: grid;
+      grid-template-columns: 88px 1fr 40px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .orb-ctrl-label {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.64);
+      text-align: left;
+    }
+
+    .orb-ctrl-val {
+      font-size: 11px;
+      color: rgba(255,255,255,0.78);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .orb-controls input[type='range'] {
+      width: 100%;
+      height: 2px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255,255,255,0.14);
+      border-radius: 2px;
+      outline: none;
+    }
+
+    .orb-controls input[type='range']::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 0;
+    }
+
+    .orb-controls input[type='range']::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 0;
+    }
+
+    #orb-s-thumb::-webkit-slider-thumb,
+    #orb-s-thumb::-moz-range-thumb { background: #e8e8e8; }
+
+    #orb-f-thumb::-webkit-slider-thumb,
+    #orb-f-thumb::-moz-range-thumb { background: #e8943a; }
+
+    #orb-l-thumb::-webkit-slider-thumb,
+    #orb-l-thumb::-moz-range-thumb { background: #5b9bd5; }
+
+    #orb-a-thumb::-webkit-slider-thumb,
+    #orb-a-thumb::-moz-range-thumb { background: #7aaa7a; }
+
+    .orb-psi-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 8px;
+      padding-top: 10px;
+      border-top: 0.5px solid rgba(255,255,255,0.08);
+    }
+
+    .orb-psi-label {
+      font-size: 10px;
+      color: rgba(255,255,255,0.58);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .orb-psi-val {
+      font-size: 18px;
+      color: rgba(255,255,255,0.86);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
     }
 
     .orb-caption {
@@ -345,7 +485,7 @@
     .truth-text {
       font-size: 13px;
       line-height: 1.85;
-      color: rgba(255,255,255,0.4);
+      color: rgba(255,255,255,0.52);
       max-width: 540px;
       text-shadow: 0 2px 14px rgba(0,0,0,0.55);
     }
@@ -394,13 +534,21 @@
     .flow-stage {
       display: flex;
       flex-direction: column;
+      background:
+        radial-gradient(circle at top left, rgba(20,24,30,0.2), transparent 42%),
+        linear-gradient(180deg, rgba(15,18,24,0.62), rgba(10,12,18,0.74));
+      border: 0.5px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      padding: 14px 14px 16px;
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
     }
 
     .flow-stage-label {
       font-size: 10px;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: rgba(255,255,255,0.32);
+      color: rgba(255,255,255,0.52);
       margin-bottom: 8px;
     }
 
@@ -429,7 +577,7 @@
       padding: 3px 9px;
       border-radius: 999px;
       border: 0.5px solid rgba(255,255,255,0.1);
-      color: rgba(255,255,255,0.42);
+      color: rgba(255,255,255,0.6);
       font-size: 9px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
@@ -439,7 +587,7 @@
       margin-top: 12px;
       font-size: 12px;
       line-height: 1.75;
-      color: rgba(255,255,255,0.42);
+      color: rgba(255,255,255,0.56);
       text-shadow: 0 2px 14px rgba(0,0,0,0.55);
     }
 
@@ -460,7 +608,7 @@
       font-size: 9px;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: rgba(255,255,255,0.24);
+      color: rgba(255,255,255,0.46);
       text-align: center;
       white-space: nowrap;
     }
@@ -479,7 +627,7 @@
       padding: 8px 0 8px 14px;
       font-size: 12px;
       line-height: 1.7;
-      color: rgba(255,255,255,0.42);
+      color: rgba(255,255,255,0.56);
       text-shadow: 0 2px 14px rgba(0,0,0,0.55);
     }
 
@@ -520,19 +668,25 @@
     }
 
     .protocol-node {
-      background: rgba(255,255,255,0.04);
-      border: 0.5px solid rgba(255,255,255,0.1);
+      background:
+        radial-gradient(circle at top left, rgba(20,24,30,0.22), transparent 40%),
+        linear-gradient(180deg, rgba(15,18,24,0.72), rgba(10,12,18,0.82));
+      border: 0.5px solid rgba(255,255,255,0.13);
       border-radius: 12px;
       padding: 28px 28px 28px 36px;
       margin-bottom: 12px;
       position: relative;
       overflow: hidden;
+      backdrop-filter: blur(7px);
+      -webkit-backdrop-filter: blur(7px);
       transition: background 0.3s, border-color 0.3s;
     }
 
     .protocol-node:hover {
-      background: rgba(255,255,255,0.06);
-      border-color: rgba(255,255,255,0.16);
+      background:
+        radial-gradient(circle at top left, rgba(20,24,30,0.28), transparent 42%),
+        linear-gradient(180deg, rgba(16,19,26,0.8), rgba(10,12,18,0.88));
+      border-color: rgba(255,255,255,0.2);
     }
 
     .protocol-node::before {
@@ -581,7 +735,7 @@
       font-style: italic;
       font-weight: 300;
       font-size: 13px;
-      color: rgba(255,255,255,0.45);
+      color: rgba(255,255,255,0.56);
       margin-bottom: 12px;
       line-height: 1.4;
       text-shadow: 0 2px 14px rgba(0,0,0,0.5);
@@ -592,7 +746,7 @@
       font-family: var(--font-mono);
       font-size: 11px;
       color: rgba(255,255,255,0.55);
-      background: rgba(0,0,0,0.25);
+      background: rgba(0,0,0,0.36);
       border: 0.5px solid rgba(255,255,255,0.07);
       border-radius: 6px;
       padding: 10px 14px;
@@ -604,7 +758,7 @@
     .protocol-node .node-desc {
       font-size: 12px;
       line-height: 1.75;
-      color: rgba(255,255,255,0.45);
+      color: rgba(255,255,255,0.58);
       letter-spacing: 0.01em;
       text-shadow: 0 2px 14px rgba(0,0,0,0.5);
     }
@@ -948,6 +1102,20 @@
         padding: 84px 24px 72px;
       }
 
+      .orb-wrap {
+        width: min(100%, 480px);
+        padding: 20px 14px 14px;
+      }
+
+      .orb-controls {
+        width: calc(100vw - 64px);
+        max-width: 420px;
+      }
+
+      .orb-ctrl-row {
+        grid-template-columns: 78px 1fr 38px;
+      }
+
       .demo,
       .truths,
       .flow,
@@ -1136,7 +1304,34 @@
 <section class="orb-section">
   <div class="orb-wrap interactive" id="orb-wrap">
     <canvas id="orb-canvas" width="280" height="280"></canvas>
-    <p class="orb-hint">hover or drag the orb</p>
+    <p class="orb-hint">hover, drag, or tune the attractor</p>
+    <div class="orb-controls">
+      <div class="orb-ctrl-row">
+        <span class="orb-ctrl-label" style="color:rgba(232,232,232,0.64);">stability</span>
+        <input type="range" id="orb-s-thumb" min="0" max="100" value="88" step="1" aria-label="Stability" />
+        <span class="orb-ctrl-val" id="orb-sv">0.88</span>
+      </div>
+      <div class="orb-ctrl-row">
+        <span class="orb-ctrl-label" style="color:rgba(233,148,58,0.84);">friction</span>
+        <input type="range" id="orb-f-thumb" min="0" max="100" value="14" step="1" aria-label="Friction" />
+        <span class="orb-ctrl-val" id="orb-fv">0.14</span>
+      </div>
+      <div class="orb-ctrl-row">
+        <span class="orb-ctrl-label" style="color:rgba(91,155,213,0.84);">logic</span>
+        <input type="range" id="orb-l-thumb" min="0" max="100" value="91" step="1" aria-label="Logic" />
+        <span class="orb-ctrl-val" id="orb-lv">0.91</span>
+      </div>
+      <div class="orb-ctrl-row">
+        <span class="orb-ctrl-label" style="color:rgba(122,170,122,0.84);">autonomy</span>
+        <input type="range" id="orb-a-thumb" min="0" max="100" value="95" step="1" aria-label="Autonomy" />
+        <span class="orb-ctrl-val" id="orb-av">0.95</span>
+      </div>
+
+      <div class="orb-psi-row">
+        <span class="orb-psi-label">psi coherence</span>
+        <span class="orb-psi-val" id="orb-psiv">2.8800</span>
+      </div>
+    </div>
   </div>
   <p class="orb-caption">Every session leaves a fingerprint.</p>
   <p class="orb-sub">
@@ -1152,7 +1347,7 @@
 <section class="flow">
   <p class="flow-label">The descent</p>
   <p class="flow-intro">
-    You do not jump between pages. You descend through one continuous terrain until a session becomes a wave, and a wave becomes a whisper.
+    You do not jump between pages. You descend through one continuous terrain, the constellation, until a pattern becomes a wave, and a wave becomes a collapse.
   </p>
 
   <div class="flow-stages">
@@ -1408,7 +1603,7 @@
 <section class="footer-cta" id="enter">
   <h2 class="footer-title">Ready to find<br><em>yourself</em>?</h2>
   <p class="footer-sub">
-    Resonantia is a desktop application built on the
+    Resonantia is an application built on the
     ⏣ Spatio-Temporal Transfer Protocol.
     Your mind, made navigable.
   </p>
@@ -1577,6 +1772,41 @@ let orbSpinY = 0;
 let orbPointerActive = false;
 let orbDragging = false;
 let orbLastPointer = null;
+const orbControlIds = ['orb-s-thumb', 'orb-f-thumb', 'orb-l-thumb', 'orb-a-thumb'];
+
+function orbPsi(a) {
+  return +(a.s + a.f + a.l + a.a).toFixed(4);
+}
+
+function updateOrbAvecFromControls() {
+  const sSlider = document.getElementById('orb-s-thumb');
+  const fSlider = document.getElementById('orb-f-thumb');
+  const lSlider = document.getElementById('orb-l-thumb');
+  const aSlider = document.getElementById('orb-a-thumb');
+
+  if (!sSlider || !fSlider || !lSlider || !aSlider) {
+    return;
+  }
+
+  AVEC.s = Number(sSlider.value) / 100;
+  AVEC.f = Number(fSlider.value) / 100;
+  AVEC.l = Number(lSlider.value) / 100;
+  AVEC.a = Number(aSlider.value) / 100;
+
+  const sv = document.getElementById('orb-sv');
+  const fv = document.getElementById('orb-fv');
+  const lv = document.getElementById('orb-lv');
+  const av = document.getElementById('orb-av');
+  const psiv = document.getElementById('orb-psiv');
+
+  if (sv) sv.textContent = AVEC.s.toFixed(2);
+  if (fv) fv.textContent = AVEC.f.toFixed(2);
+  if (lv) lv.textContent = AVEC.l.toFixed(2);
+  if (av) av.textContent = AVEC.a.toFixed(2);
+  if (psiv) psiv.textContent = orbPsi(AVEC).toFixed(4);
+
+  initOrbStreams(AVEC);
+}
 
 function initOrbStreams(avec) {
   orbStreams = [];
@@ -1764,7 +1994,14 @@ function drawOrb() {
   ot+=0.008;
   requestAnimationFrame(drawOrb);
 }
-initOrbStreams(AVEC);
+orbControlIds.forEach((id) => {
+  const input = document.getElementById(id);
+  if (input) {
+    input.addEventListener('input', updateOrbAvecFromControls);
+  }
+});
+
+updateOrbAvecFromControls();
 drawOrb();
 
 // ── SCROLL REVEALS ──
