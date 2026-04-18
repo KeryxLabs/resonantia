@@ -73,7 +73,7 @@
   let phase2Committed = false;
   let committedPhase2Key = '';
   let selectedPhase = 1;
-  let lastUnlockedPhase = 1;
+  let previousMaxVisiblePhase = 1;
 
   function currentScopeKeyFor(): string {
     if (scope === 'session') {
@@ -169,10 +169,20 @@
   $: phase2Complete = phase1Complete && phase2Committed && committedPhase2Key === currentPhase2Key;
   $: phase3Complete = phase2Complete && /distilled|exported|stored|complete|finished|sealed/i.test(status ?? '');
   $: maxVisiblePhase = phase2Complete ? 3 : phase1Complete ? 2 : 1;
-  $: if (open && maxVisiblePhase > lastUnlockedPhase) selectedPhase = maxVisiblePhase;
-  $: if (selectedPhase > maxVisiblePhase) selectedPhase = maxVisiblePhase;
-  $: if (!open) selectedPhase = 1;
-  $: lastUnlockedPhase = open ? maxVisiblePhase : 1;
+  $: {
+    if (!open) {
+      selectedPhase = 1;
+      previousMaxVisiblePhase = 1;
+    } else {
+      if (maxVisiblePhase > previousMaxVisiblePhase) {
+        selectedPhase = maxVisiblePhase;
+      }
+      if (selectedPhase > maxVisiblePhase) {
+        selectedPhase = maxVisiblePhase;
+      }
+      previousMaxVisiblePhase = maxVisiblePhase;
+    }
+  }
 
   $: completedPhaseCount = Number(phase1Complete) + Number(phase2Complete) + Number(phase3Complete);
   $: completionPct = Math.round((completedPhaseCount / 3) * 100);
@@ -398,7 +408,7 @@
     top: 50%;
     transform: translate(-50%, -50%) scale(0.985);
     width: min(760px, calc(100vw - 52px));
-    max-height: min(620px, calc(100vh - 52px));
+    max-height: min(620px, calc(100dvh - 52px));
     display: grid;
     grid-template-columns: minmax(180px, 0.64fr) minmax(280px, 360px);
     gap: clamp(18px, 5vw, 46px);
@@ -406,6 +416,7 @@
     background: transparent;
     box-shadow: none;
     padding: 0;
+    overflow: hidden;
     opacity: 0;
     pointer-events: none;
     transition: transform 0.26s cubic-bezier(0.2, 0.9, 0.2, 1), opacity 0.22s ease;
@@ -493,7 +504,8 @@
     align-content: start;
     gap: 8px;
     min-height: 0;
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .control-head {
@@ -630,13 +642,16 @@
     .alkahest-lab {
       position: relative;
       top: 10px;
+      left: 50%;
       grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
       justify-items: center;
       transform: translateX(-50%);
-      max-height: none;
+      max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 20px);
+      max-height: calc(100svh - var(--safe-top) - var(--safe-bottom) - 20px);
       width: min(400px, calc(100vw - 14px));
       gap: 10px;
-      padding-bottom: 12px;
+      padding-bottom: max(8px, calc(var(--safe-bottom) + 4px));
     }
 
     .alkahest-lab.open {
@@ -655,7 +670,10 @@
       width: 100%;
       padding: 8px;
       gap: 6px;
-      overflow: visible;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
     }
 
     .card-motion {
@@ -666,6 +684,17 @@
   }
 
   @media (max-width: 760px) {
+    .alkahest-shell {
+      left: max(4px, calc(var(--safe-left) + 0px));
+      bottom: max(58px, calc(var(--safe-bottom) + 48px));
+    }
+
+    .alkahest-launcher {
+      width: 34px;
+      height: 34px;
+      box-shadow: 0 0 8px rgba(86, 144, 213, 0.1);
+    }
+
     .phase-popover {
       --phase-anchor: 50%;
     }

@@ -370,6 +370,63 @@
     renameSessionLoading = false;
   }
 
+  function sessionNotFoundError(error: unknown): boolean {
+    return /source session not found/i.test(String(error ?? ''));
+  }
+
+  function noteDeferredCloudRename(reason: unknown) {
+    const detail = String(reason ?? '').replace(/\s+/g, ' ').trim();
+    if (detail) {
+      console.warn('[rename] cloud rename deferred:', detail);
+    } else {
+      console.warn('[rename] cloud rename deferred');
+    }
+    syncPullResult = null;
+    syncPullError = 'rename saved locally only; cloud currently unavailable';
+    syncDetailTimestamp = new Date();
+    syncDetailAutoOpen = true;
+    scheduleSyncDetailClose(7200);
+  }
+
+  function uniqueSessionIdCandidates(values: string[]): string[] {
+    const unique: string[] = [];
+    const seen = new Set<string>();
+
+    for (const value of values) {
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      unique.push(trimmed);
+    }
+
+    return unique;
+  }
+
+  async function renameSessionLocally(sourceCandidates: string[], targetSessionId: string) {
+    let lastNotFoundError: unknown = null;
+
+    for (const sourceSessionId of sourceCandidates) {
+      try {
+        await resonantiaClient.renameSession({
+          sourceSessionId,
+          targetSessionId,
+          allowMerge: false,
+        });
+        return sourceSessionId;
+      } catch (err) {
+        if (sessionNotFoundError(err)) {
+          lastNotFoundError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastNotFoundError ?? new Error('source session not found');
+  }
+
   async function submitRenameSessionDialog() {
     const targetId = renameSessionTargetId;
     if (!targetId) {
@@ -399,16 +456,18 @@
     renameSessionError = null;
 
     try {
+      const idFromGraph = targetId.startsWith('s:') ? targetId.slice(2) : targetId;
+      const sourceCandidates = uniqueSessionIdCandidates([
+        fallback,
+        idFromGraph,
+        targetId,
+      ]);
       let config = await resonantiaClient.getConfig();
       const configuredGateway = (config.gatewayBaseUrl ?? '').trim();
       const usingManagedGateway = isManagedGatewayBaseUrl(configuredGateway);
       let syncAuthToken = (config.gatewayAuthToken ?? '').trim();
 
-      await resonantiaClient.renameSession({
-        sourceSessionId: fallback,
-        targetSessionId: trimmed,
-        allowMerge: false,
-      });
+      const renamedSourceSessionId = await renameSessionLocally(sourceCandidates, trimmed);
 
       if (configuredGateway) {
         if (usingManagedGateway) {
@@ -422,28 +481,16 @@
         }
 
         try {
-          await renameSessionInGateway(configuredGateway, syncAuthToken, fallback, trimmed);
+          await renameSessionInGateway(configuredGateway, syncAuthToken, renamedSourceSessionId, trimmed);
         } catch (cloudError) {
-          try {
-            await resonantiaClient.renameSession({
-              sourceSessionId: trimmed,
-              targetSessionId: fallback,
-              allowMerge: true,
-            });
-          } catch (rollbackError) {
-            renameSessionError = `cloud rename failed and rollback failed: ${String(cloudError)} | rollback: ${String(rollbackError)}`;
-            return;
-          }
-
-          renameSessionError = `cloud rename failed: ${String(cloudError)}`;
-          return;
+          noteDeferredCloudRename(cloudError);
         }
       }
 
-      if (composeSessionId.trim() === fallback) {
+      if (composeSessionId.trim() === fallback || composeSessionId.trim() === renamedSourceSessionId) {
         composeSessionId = trimmed;
       }
-      if (calibSessionId.trim() === fallback) {
+      if (calibSessionId.trim() === fallback || calibSessionId.trim() === renamedSourceSessionId) {
         calibSessionId = trimmed;
       }
 
@@ -5751,5 +5798,12 @@
     border-color: rgba(132, 147, 187, 0.26);
     background: rgba(43, 52, 75, 0.3);
     color: rgba(192, 204, 231, 0.78);
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    .rename-session-input {
+      font-size: 16px;
+      line-height: 1.35;
+    }
   }
 </style>

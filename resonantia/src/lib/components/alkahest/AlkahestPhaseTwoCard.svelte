@@ -203,4 +203,13 @@
       font-size: 8px;
     }
   }
+
+  @media (hover: none) and (pointer: coarse) {
+    .input,
+    select.input,
+    input.input {
+      font-size: 16px;
+      line-height: 1.3;
+    }
+  }
 </style>

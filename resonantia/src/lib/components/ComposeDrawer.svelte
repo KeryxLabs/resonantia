@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatTimestamp } from '@resonantia/core';
+  import { tick } from 'svelte';
 
   type ComposeMode = 'live' | 'importare';
 
@@ -93,6 +94,8 @@
   let pastePrettyView = false;
   let composeAutoScrollKey = '';
   let contextPopupOpen = false;
+  let drawerEl: HTMLDivElement | null = null;
+  let contextPanelEl: HTMLDivElement | null = null;
 
   const STTP_KEYWORDS = new Set([
     'manual',
@@ -149,8 +152,24 @@
     queueMicrotask(syncPasteEditorScroll);
   }
 
+  async function revealContextPanel() {
+    await tick();
+
+    if (!drawerEl || !contextPanelEl) {
+      return;
+    }
+
+    const drawerRect = drawerEl.getBoundingClientRect();
+    const panelRect = contextPanelEl.getBoundingClientRect();
+    const targetTop = drawerEl.scrollTop + (panelRect.top - drawerRect.top) - 8;
+    drawerEl.scrollTo({ top: Math.max(targetTop, 0), behavior: 'smooth' });
+  }
+
   function toggleContextPopup() {
     contextPopupOpen = !contextPopupOpen;
+    if (contextPopupOpen) {
+      void revealContextPanel();
+    }
   }
 
   function prettifySttpVisual(raw: string): string {
@@ -295,15 +314,15 @@
 </script>
 
 {#if open}
-  <div class="drawer drawer-compose" class:importare={mode === 'importare'} role="dialog" aria-label={mode === 'importare' ? 'Import node' : 'Compose context'}>
+  <div class="drawer drawer-compose" class:importare={mode === 'importare'} bind:this={drawerEl} role="dialog" aria-label={mode === 'importare' ? 'Import node' : 'Compose context'}>
     <div class="drawer-header">
       <span class="drawer-title">{mode === 'importare' ? 'importare' : 'compose'}</span>
       <button class="close-btn" on:click={onClose}>✕</button>
     </div>
     <input
-      class="drawer-input"
+      class="drawer-input drawer-session-input"
       type="text"
-      placeholder="session id (required)"
+      placeholder="session id"
       bind:value={sessionId}
       on:input={onSessionInput}
     />
@@ -401,7 +420,7 @@
     </div>
 
     {#if mode === 'live' && contextPopupOpen}
-      <div class="compose-context-panel compose-context-popover" aria-label="context injector">
+      <div class="compose-context-panel compose-context-popover" bind:this={contextPanelEl} aria-label="context injector">
         <div class="compose-context-head">
           <span>session context</span>
           <small>{injectedNodes.length} injected</small>
@@ -531,9 +550,11 @@
     bottom: 84px;
     left: 50%;
     transform: translateX(-50%);
+    box-sizing: border-box;
     width: min(456px, calc(100vw - 32px));
     max-height: calc(100dvh - 148px);
     overflow-y: auto;
+    overflow-x: hidden;
     background: rgba(10, 11, 14, 0.97);
     border: 0.5px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
@@ -556,6 +577,7 @@
     flex-direction: column;
     gap: 5px;
     padding: 14px;
+    overflow-x: hidden;
   }
 
   .drawer-compose.importare {
@@ -1196,6 +1218,19 @@
     transition: border-color 0.2s;
   }
 
+  .drawer-session-input {
+    margin-bottom: 6px;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    border-radius: 5px;
+    padding: 7px 9px;
+  }
+
+  .drawer-session-input::placeholder {
+    color: rgba(216, 231, 246, 0.48);
+  }
+
   .drawer-input:focus {
     border-color: rgba(255, 255, 255, 0.25);
   }
@@ -1297,15 +1332,32 @@
     .drawer-compose {
       top: calc(var(--safe-top) + 56px);
       bottom: auto;
-      width: calc(100vw - 20px);
-      height: min(64dvh, 470px);
-      max-height: min(64dvh, 470px);
-      padding: 12px;
+      width: calc(100vw - 24px);
+      height: min(68svh, 512px);
+      max-height: min(68svh, 512px);
+      padding: 10px;
+      border-color: rgba(214, 233, 251, 0.2);
+      background: rgba(8, 12, 18, 0.985);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+    }
+
+    .drawer-header {
+      margin-bottom: 7px;
+    }
+
+    .drawer-title {
+      font-size: 14px;
+    }
+
+    .drawer-session-input {
+      margin-bottom: 5px;
+      padding: 6px 8px;
     }
 
     .compose-thread {
       max-height: none;
-      min-height: 132px;
+      min-height: 152px;
+      padding: 7px;
     }
 
     .compose-entry {
@@ -1323,17 +1375,33 @@
       min-height: 60px;
     }
 
-    .compose-utility-actions,
-    .compose-paste-actions {
-      flex-direction: column;
-      align-items: stretch;
+    .compose-utility-actions {
+      align-items: center;
+      gap: 4px;
+      margin-top: 2px;
+      margin-bottom: 1px;
+      row-gap: 4px;
     }
 
-    .compose-link-btn,
+    .compose-link-btn {
+      width: auto;
+      text-align: center;
+      padding: 4px 7px;
+      font-size: 8px;
+      letter-spacing: 0.04em;
+    }
+
+    .compose-paste-actions {
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
     .compose-paste-actions .drawer-btn {
-      width: 100%;
-      text-align: left;
-      padding: 1px 0;
+      width: auto;
+      text-align: center;
+      padding: 5px 10px;
     }
 
     .compose-utility-divider {

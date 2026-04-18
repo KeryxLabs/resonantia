@@ -273,9 +273,11 @@
     bottom: 84px;
     left: 50%;
     transform: translateX(-50%);
+    box-sizing: border-box;
     width: min(456px, calc(100vw - 32px));
     max-height: calc(100dvh - 148px);
     overflow-y: auto;
+    overflow-x: hidden;
     background: rgba(10, 11, 14, 0.97);
     border: 0.5px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
@@ -547,6 +549,13 @@
     font-size: 10px;
     color: rgba(122, 170, 122, 0.9);
     margin: 6px 0 0;
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    .drawer-input {
+      font-size: 16px;
+      line-height: 1.35;
+    }
   }
 
   @media (max-width: 520px) {

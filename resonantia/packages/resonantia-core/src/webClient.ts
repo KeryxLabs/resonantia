@@ -1098,6 +1098,33 @@ function toSessionGraphId(sessionId: string): string {
   return sessionId.startsWith("s:") ? sessionId : `s:${sessionId}`;
 }
 
+function sessionIdAliases(sessionId: string): string[] {
+  const trimmed = sessionId.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  const append = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    aliases.push(normalized);
+  };
+
+  append(trimmed);
+  if (trimmed.startsWith("s:")) {
+    append(trimmed.slice(2));
+  } else {
+    append(`s:${trimmed}`);
+  }
+
+  return aliases;
+}
+
 function toNodeLabel(node: NodeDto): string {
   const date = node.timestamp.slice(0, 10);
   return `${node.tier} · ${date}`;
@@ -2318,6 +2345,22 @@ export function createWebResonantiaClient(): ResonantiaClient {
         throw new Error("source and target session ids are required");
       }
 
+      const sourceAliases = sessionIdAliases(sourceSessionId);
+      const targetAliases = sessionIdAliases(targetSessionId);
+      const sourceAliasSet = new Set(sourceAliases);
+      const targetAliasSet = new Set(targetAliases);
+
+      const aliasOverlap = sourceAliases.some((alias) => targetAliasSet.has(alias));
+      if (aliasOverlap) {
+        return {
+          sourceSessionId,
+          targetSessionId,
+          movedNodes: 0,
+          movedCalibrations: 0,
+          scopesApplied: 0,
+        };
+      }
+
       if (sourceSessionId === targetSessionId) {
         return {
           sourceSessionId,
@@ -2329,14 +2372,16 @@ export function createWebResonantiaClient(): ResonantiaClient {
       }
 
       const db = await getDb();
-      const allNodes = await readAllNodes(db);
-      const sourceNodes = allNodes.filter((node) => node.sessionId === sourceSessionId);
+      const dbNodes = await readAllNodes(db);
+      const cachedNodes = readNodesCacheFromLocalStorage();
+      const allNodes = mergeNodesBySyncKey(dbNodes, cachedNodes);
+      const sourceNodes = allNodes.filter((node) => sourceAliasSet.has(node.sessionId));
 
       if (sourceNodes.length === 0) {
         throw new Error(`source session not found: ${sourceSessionId}`);
       }
 
-      const targetHasNodes = allNodes.some((node) => node.sessionId === targetSessionId);
+      const targetHasNodes = allNodes.some((node) => targetAliasSet.has(node.sessionId) && !sourceAliasSet.has(node.sessionId));
       if (targetHasNodes && !allowMerge) {
         throw new Error("target session already contains nodes; set allowMerge=true to merge");
       }
@@ -2357,7 +2402,16 @@ export function createWebResonantiaClient(): ResonantiaClient {
       }
 
       let movedCalibrations = 0;
-      const calibration = await readCalibrationState(db, sourceSessionId);
+      let calibrationSourceSessionId: string | null = null;
+      let calibration: CalibrationStateRecord | null = null;
+      for (const alias of sourceAliases) {
+        calibration = await readCalibrationState(db, alias);
+        if (calibration) {
+          calibrationSourceSessionId = alias;
+          break;
+        }
+      }
+
       if (calibration) {
         await upsertAny(db, recordIdForCalibration(targetSessionId), {
           sessionId: targetSessionId,
@@ -2365,11 +2419,22 @@ export function createWebResonantiaClient(): ResonantiaClient {
           triggerHistory: calibration.triggerHistory,
           updatedAt: nowIso(),
         });
-        await deleteAny(db, recordIdForCalibration(sourceSessionId)).catch(() => undefined);
+
+        for (const alias of sourceAliases) {
+          if (alias === targetSessionId) {
+            continue;
+          }
+          await deleteAny(db, recordIdForCalibration(alias)).catch(() => undefined);
+        }
+
+        if (calibrationSourceSessionId && calibrationSourceSessionId !== targetSessionId) {
+          await deleteAny(db, recordIdForCalibration(calibrationSourceSessionId)).catch(() => undefined);
+        }
+
         movedCalibrations = 1;
       }
 
-      const untouched = allNodes.filter((node) => node.sessionId !== sourceSessionId);
+      const untouched = allNodes.filter((node) => !sourceAliasSet.has(node.sessionId));
       writeNodesCacheToLocalStorage(mergeNodesBySyncKey(untouched, migratedNodes));
 
       return {
