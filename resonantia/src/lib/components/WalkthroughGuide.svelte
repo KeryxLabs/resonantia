@@ -28,12 +28,12 @@
     settings: {
       title: 'set your foundations',
       summary: 'Pick how Resonantia thinks and syncs so the rest of your flow feels reliable.',
-      detail: 'Open menu -> review settings, this is where you choose your model provider and sync preferences -> press Next.',
+      detail: 'Open menu -> view settings menu -> press Next.',
     },
     checkin: {
       title: 'capture your current mode',
       summary: 'Log your current state so this session has context from the very beginning.',
-      detail: 'Open menu -> this is where you check in and capture your state -> press Next.',
+      detail: 'Open menu -> view calibration modes -> press Next.',
     },
     telescope: {
       title: 'scan with telescope',
@@ -43,7 +43,7 @@
     alkahest: {
       title: 'open alkahest lab',
       summary: 'Enter Alkahest to distill memory into a clearer node or exportable artifact.',
-      detail: 'Launch Alkahest -> let the chamber open -> press Next.',
+      detail: 'Launch Alkahest -> view the chamber open -> press Next.',
     },
     importare: {
       title: 'open importare',
