@@ -27,33 +27,33 @@
   const phaseMeta: Record<Exclude<WalkthroughPhase, 'intro' | 'complete'>, StepMeta> = {
     settings: {
       title: 'set your foundations',
-      summary: 'Choose model and sync destination so the flow stays predictable.',
-      detail: 'Open menu, choose settings, then press Next.',
+      summary: 'Pick how Resonantia thinks and syncs so the rest of your flow feels reliable.',
+      detail: 'Open menu -> review settings, this is where you choose your model provider and sync preferences -> press Next.',
     },
     checkin: {
       title: 'capture your current mode',
-      summary: 'Record your current state before moving deeper into the run.',
-      detail: 'Open menu, choose check in, then press Next.',
+      summary: 'Log your current state so this session has context from the very beginning.',
+      detail: 'Open menu -> this is where you check in and capture your state -> press Next.',
     },
     telescope: {
       title: 'scan with telescope',
-      summary: 'Use the scope to inspect timeline ranges and session context.',
-      detail: 'Open telescope, explore briefly, then press Next.',
+      summary: 'Use Telescope to browse sessions, inspect timelines, and spot patterns worth following.',
+      detail: 'Open telescope -> look around your timeline for a moment -> press Next.',
     },
     alkahest: {
       title: 'open alkahest lab',
-      summary: 'Enter the memory refinery to prep distillation and bundle workflows.',
-      detail: 'Launch Alkahest, let the chamber open, then press Next.',
+      summary: 'Enter Alkahest to distill memory into a clearer node or exportable artifact.',
+      detail: 'Launch Alkahest -> let the chamber open -> press Next.',
     },
     importare: {
       title: 'open importare',
-      summary: 'Show direct node ingestion before switching into live creation.',
-      detail: 'Open + compose, choose importare, then press Next.',
+      summary: 'Use Importare to bring in external STTP material and turn it into usable nodes quickly.',
+      detail: 'Open + compose -> choose importare, look around -> press Next.',
     },
     live: {
       title: 'switch to create live',
-      summary: 'Finish by entering the live thread workflow.',
-      detail: 'Switch to create live, then press Finish.',
+      summary: 'Switch to Live to think, write, and evolve ideas in an active thread.',
+      detail: 'Switch to create live -> confirm it opens -> press Finish.',
     },
   };
 
@@ -351,7 +351,7 @@
       <section class="cinematic-center-card" data-tour-allow>
         <p class="cinematic-kicker">walkthrough complete</p>
         <h2>guided pass finished</h2>
-        <p>Continue exploring naturally, or run the demo again whenever you want to rehearse the path.</p>
+        <p>Continue exploring naturally, you got more features to discover, or run the demo again whenever you want to rehearse the path.</p>
         <div class="cinematic-actions">
           <button class="tour-btn launch" type="button" on:click={() => dismissWalkthrough(true)} data-tour-skip>
             close

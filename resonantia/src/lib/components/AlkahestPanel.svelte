@@ -685,7 +685,14 @@
 
   @media (max-width: 760px) {
     .alkahest-lab {
+      top: max(12px, calc(var(--safe-top) + 8px));
+      max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 24px);
+      max-height: calc(100svh - var(--safe-top) - var(--safe-bottom) - 24px);
       width: min(380px, calc(100vw - 24px));
+    }
+
+    .control-pane {
+      padding-top: 10px;
     }
 
     .alkahest-shell {

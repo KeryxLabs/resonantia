@@ -52,23 +52,13 @@
     dispatch('scopeChange');
   }
 
-  function isSessionSelected(sessionKey: string): boolean {
-    return sessionIds.includes(sessionKey);
-  }
-
-  function toggleSession(sessionKey: string, checked: boolean) {
-    const selected = new Set(sessionIds.map((id) => id.trim()).filter(Boolean));
-    if (checked) {
-      selected.add(sessionKey);
-    } else {
-      selected.delete(sessionKey);
-    }
-    sessionIds = [...selected];
+  function syncSelectedSessions() {
+    sessionIds = [...new Set(sessionIds.map((id) => id.trim()).filter(Boolean))];
     notifyScopeChange();
   }
 
   function selectAllSessions() {
-    sessionIds = sessions.map((session) => session.id);
+    sessionIds = [...new Set(sessions.map((session) => session.id.trim()).filter(Boolean))];
     notifyScopeChange();
   }
 
@@ -134,9 +124,10 @@
             <label class="session-item">
               <input
                 type="checkbox"
-                checked={isSessionSelected(session.id)}
+                value={session.id}
+                bind:group={sessionIds}
                 disabled={loading || scopeScanning}
-                on:change={(event) => toggleSession(session.id, (event.target as HTMLInputElement).checked)}
+                on:change={syncSelectedSessions}
               />
               <span>{sessionTitle(session)}</span>
             </label>
