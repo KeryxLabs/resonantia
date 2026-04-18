@@ -374,6 +374,25 @@
     return /source session not found/i.test(String(error ?? ''));
   }
 
+  function friendlyGraphLoadError(reason: unknown): string {
+    const message = String(reason ?? '').toLowerCase();
+
+    if (
+      message.includes('open db endpoint')
+      || message.includes('timed out after')
+      || message.includes('indexeddb')
+      || message.includes('mem://')
+    ) {
+      return 'local memory is unavailable right now. retry in a moment.';
+    }
+
+    if (message.includes('failed to fetch') || message.includes('network')) {
+      return 'network is unavailable right now. retry in a moment.';
+    }
+
+    return 'unable to load right now. retry in a moment.';
+  }
+
   function noteDeferredCloudRename(reason: unknown) {
     const detail = String(reason ?? '').replace(/\s+/g, ' ').trim();
     if (detail) {
@@ -588,7 +607,8 @@
       camY = targetCamY = H() / 2;
       camScale = targetCamScale = constellationLayerScale();
     } catch (e) {
-      error = String(e);
+      console.error('[graph] load failed', e);
+      error = friendlyGraphLoadError(e);
     } finally {
       loading = false;
     }
