@@ -496,5 +496,20 @@
       width: 188px;
       height: 278px;
     }
+
+    .telescope-sessions {
+      overflow-x: hidden;
+      touch-action: pan-y;
+    }
+
+    .telescope-item {
+      min-width: 0;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 6px;
+    }
+
+    .telescope-date {
+      display: none;
+    }
   }
 </style>
