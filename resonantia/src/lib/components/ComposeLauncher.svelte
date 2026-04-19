@@ -8,7 +8,6 @@
   const dispatch = createEventDispatcher<{
     toggle: void;
     live: void;
-    importare: void;
   }>();
 </script>
 
@@ -16,7 +15,6 @@
   {#if menuOpen}
     <div class="compose-launch-popover" role="menu" aria-label="compose options">
       <button class="compose-launch-item" data-tour-target="compose-live" on:click={() => dispatch('live')}>create live</button>
-      <button class="compose-launch-item" data-tour-target="compose-importare" on:click={() => dispatch('importare')}>importare</button>
     </div>
   {/if}
   <button class="compose-btn" data-tour-target="compose-toggle" class:open={menuOpen} on:click={() => dispatch('toggle')}>+ compose</button>

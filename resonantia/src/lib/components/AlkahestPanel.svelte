@@ -8,7 +8,7 @@
   import AlkahestPhaseThreeCard from './alkahest/AlkahestPhaseThreeCard.svelte';
 
   type AlkahestScopeKind = 'session' | 'sessions' | 'timeline' | 'resonance';
-  type AlkahestMode = 'export' | 'distill' | 'both';
+  type AlkahestMode = 'export' | 'distill' | 'both' | 'import';
   type ResonanceDim = 'stability' | 'friction' | 'logic' | 'autonomy';
 
   type TimelineOption = {
@@ -49,6 +49,7 @@
 
   export let prompt = '';
   export let targetSessionId = 'alkahest-monthly';
+  export let importNodeDraft = '';
   export let storeDistilledNode = true;
 
   export let preflightNodeCount = 0;
@@ -94,6 +95,12 @@
 
   function currentPhase2KeyFor(): string {
     const normalizedTarget = targetSessionId.trim();
+    if (mode === 'import') {
+      const normalizedImportDraft = importNodeDraft.trim();
+      const fingerprint = normalizedImportDraft.slice(0, 96);
+      return `${mode}|${normalizedTarget}|${normalizedImportDraft.length}|${fingerprint}`;
+    }
+
     return `${mode}|${normalizedTarget}|${storeDistilledNode ? 'store' : 'skip'}`;
   }
 
@@ -137,7 +144,7 @@
     prompt = INTERNAL_DISTILL_PROMPT;
   }
 
-  $: storeDistilledNode = mode !== 'export';
+  $: storeDistilledNode = mode === 'distill' || mode === 'both';
 
   $: currentScopeKey = currentScopeKeyFor();
   $: currentPhase2Key = currentPhase2KeyFor();
@@ -162,19 +169,20 @@
     clearPhase2Commit();
   }
 
+  $: importMode = mode === 'import';
   $: scopeFresh = scannedScopeKey !== '' && scannedScopeKey === currentScopeKey;
   $: scopeStale = scannedScopeKey !== '' && scannedScopeKey !== currentScopeKey;
 
-  $: phase1Complete = scopeFresh;
+  $: phase1Complete = importMode ? true : scopeFresh;
   $: phase2Complete = phase1Complete && phase2Committed && committedPhase2Key === currentPhase2Key;
-  $: phase3Complete = phase2Complete && /distilled|exported|stored|complete|finished|sealed/i.test(status ?? '');
-  $: maxVisiblePhase = phase2Complete ? 3 : phase1Complete ? 2 : 1;
+  $: phase3Complete = phase2Complete && /distilled|exported|stored|imported|complete|finished|sealed/i.test(status ?? '');
+  $: maxVisiblePhase = phase2Complete ? 3 : 2;
   $: {
     if (!open) {
       selectedPhase = 1;
       previousMaxVisiblePhase = 1;
     } else {
-      if (maxVisiblePhase > previousMaxVisiblePhase) {
+      if (maxVisiblePhase > previousMaxVisiblePhase && maxVisiblePhase === 3) {
         selectedPhase = maxVisiblePhase;
       }
       if (selectedPhase > maxVisiblePhase) {
@@ -191,6 +199,8 @@
   $: modeNarrative =
     mode === 'export'
       ? 'Liquefy the chosen memory cluster into a portable packet.'
+      : mode === 'import'
+        ? 'Import one externally prepared STTP node directly into memory.'
       : mode === 'distill'
         ? 'Distill one super node and anchor it into STTP.'
         : 'Liquefy and distill in one aligned extraction pass.';
@@ -200,13 +210,17 @@
       ? 'transmuting...'
       : mode === 'export'
         ? 'extract packet'
+        : mode === 'import'
+          ? 'import node'
         : mode === 'distill'
           ? 'distill super node'
           : 'extract + distill';
 
-  $: stageIntentLine = scopeFresh
-    ? `${preflightNodeCount} nodes across ${preflightSessionCount} sessions stabilized.`
-    : 'Stabilize the selected scope to reveal the next phase.';
+  $: stageIntentLine = importMode
+    ? 'Import mode can proceed without scope scanning.'
+    : scopeFresh
+      ? `${preflightNodeCount} nodes across ${preflightSessionCount} sessions stabilized.`
+      : 'Stabilize the selected scope to reveal the next phase.';
 
   $: providerLabel = String(modelProvider ?? 'unknown');
 </script>
@@ -263,7 +277,7 @@
           phase1Complete={phase1Complete}
           phase2Complete={phase2Complete}
           phase3Complete={phase3Complete}
-          phase2Unlocked={phase1Complete}
+          phase2Unlocked={true}
           phase3Unlocked={phase2Complete}
           on:select={handleTrackerSelect}
         />
@@ -298,6 +312,7 @@
                 <AlkahestPhaseTwoCard
                   bind:mode
                   bind:targetSessionId
+                  bind:importNodeDraft
                   {loading}
                   {scopeScanning}
                   {phase2Complete}

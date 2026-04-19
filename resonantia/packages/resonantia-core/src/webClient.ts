@@ -4,6 +4,7 @@ import transmutePreambleRaw from "../../../preamble.md?raw";
 import type {
   AppConfig,
   CalibrateSessionInput,
+  ComposeChatResponse,
   ChatMessage,
   ChatMessageRole,
   ComposeChatRequest,
@@ -163,7 +164,17 @@ type GatewayStoreOutcome = {
 
 type GatewayAiChatResponse = {
   content?: string;
+  provider?: string;
+  model?: string;
+  usage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
 };
+
+type ChatUsage = NonNullable<ComposeChatResponse["usage"]>;
+type ChatModelResponse = ComposeChatResponse;
 
 type StorageMode = "indxdb" | "mem";
 
@@ -171,6 +182,12 @@ type OllamaChatResponse = {
   message?: {
     content?: string;
   };
+  prompt_eval_count?: number;
+  eval_count?: number;
+  promptEvalCount?: number;
+  evalCount?: number;
+  total_tokens?: number;
+  totalTokens?: number;
 };
 
 type OllamaChatRequest = {
@@ -270,6 +287,41 @@ function readNumber(record: UnknownRecord, ...keys: string[]): number {
   }
 
   return 0;
+}
+
+function readOptionalNumber(record: UnknownRecord, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeChatUsage(rawUsage: UnknownRecord): ChatUsage | null {
+  const promptTokens = readOptionalNumber(rawUsage, "promptTokens", "prompt_tokens", "prompt_eval_count", "promptEvalCount");
+  const completionTokens = readOptionalNumber(rawUsage, "completionTokens", "completion_tokens", "eval_count", "evalCount");
+  const explicitTotalTokens = readOptionalNumber(rawUsage, "totalTokens", "total_tokens");
+
+  const hasUsageData = promptTokens !== undefined || completionTokens !== undefined || explicitTotalTokens !== undefined;
+  if (!hasUsageData) {
+    return null;
+  }
+
+  const totalTokens = explicitTotalTokens ?? ((promptTokens ?? 0) + (completionTokens ?? 0));
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+  };
 }
 
 function readObject(record: UnknownRecord, ...keys: string[]): UnknownRecord {
@@ -1912,7 +1964,7 @@ async function runGatewayAiChat(
   config: AppConfig,
   messages: ChatMessage[],
   purpose: "chat" | "transmutation",
-): Promise<string | null> {
+): Promise<ChatModelResponse | null> {
   const baseUrl = resolveManagedGatewayBaseUrl();
   if (!baseUrl) {
     return null;
@@ -1936,12 +1988,19 @@ async function runGatewayAiChat(
     throw new Error(`gateway ai failed: ${response.status} ${response.url} ${body}`.trim());
   }
 
-  const parsed = (await response.json().catch(() => ({}))) as GatewayAiChatResponse;
+  const parsed = asRecord(await response.json().catch(() => ({}))) as GatewayAiChatResponse;
   const text = String(parsed.content ?? "").trim();
-  return text || null;
+  const usage = normalizeChatUsage(readObject(parsed, "usage"));
+
+  return {
+    content: text || null,
+    provider: readString(parsed, "provider") || undefined,
+    model: readString(parsed, "model") || undefined,
+    usage,
+  };
 }
 
-async function runOllamaChat(config: AppConfig, messages: ChatMessage[]): Promise<string | null> {
+async function runOllamaChat(config: AppConfig, messages: ChatMessage[]): Promise<ChatModelResponse> {
   const payload: OllamaChatRequest = {
     model: config.ollamaModel,
     messages,
@@ -1972,9 +2031,16 @@ async function runOllamaChat(config: AppConfig, messages: ChatMessage[]): Promis
         throw new Error(`ollama response status failed: ${response.status} ${body}`.trim());
       }
 
-      const parsed = (await response.json().catch(() => ({}))) as OllamaChatResponse;
-      const text = parsed.message?.content?.trim();
-      return text ? text : null;
+      const parsed = asRecord(await response.json().catch(() => ({}))) as OllamaChatResponse;
+      const messageRecord = readObject(parsed, "message");
+      const text = readString(messageRecord, "content").trim();
+      const usage = normalizeChatUsage(parsed);
+      return {
+        content: text || null,
+        provider: "ollama",
+        model: config.ollamaModel,
+        usage,
+      };
     } catch (error) {
       lastError = error;
     }
@@ -1991,7 +2057,7 @@ async function runModelChat(
   config: AppConfig,
   messages: ChatMessage[],
   purpose: "chat" | "transmutation",
-): Promise<string | null> {
+): Promise<ChatModelResponse> {
   const hostedOrigin = isHostedBrowserOrigin();
   const ollamaConfigured = Boolean(config.ollamaBaseUrl.trim()) && Boolean(config.ollamaModel.trim());
   const effectiveProvider: ModelProvider =
@@ -2008,9 +2074,9 @@ async function runModelChat(
   }
 
   try {
-    const gatewayText = await runGatewayAiChat(config, messages, purpose);
-    if (gatewayText) {
-      return gatewayText;
+    const gatewayResult = await runGatewayAiChat(config, messages, purpose);
+    if (gatewayResult?.content) {
+      return gatewayResult;
     }
     throw new Error("managed gateway returned an empty response");
   } catch (error) {
@@ -2826,11 +2892,13 @@ export function createWebResonantiaClient(): ResonantiaClient {
       };
     },
 
-    async chatCompose(request: ComposeChatRequest): Promise<string | null> {
+    async chatCompose(request: ComposeChatRequest): Promise<ComposeChatResponse> {
       const { config } = await readConfigBestEffort();
       const conversation = normalizeChatMessages(request.messages, { includeSystem: false });
       if (conversation.length === 0) {
-        return null;
+        return {
+          content: null,
+        };
       }
 
       return runModelChat(config, [
@@ -2851,7 +2919,7 @@ export function createWebResonantiaClient(): ResonantiaClient {
         throw new Error("encode requires at least one chat message");
       }
 
-      const text = await runModelChat(config, [
+      const encodeResponse = await runModelChat(config, [
         { role: "system", content: COMPOSE_ENCODE_PREAMBLE },
         ...conversation,
         {
@@ -2863,6 +2931,7 @@ export function createWebResonantiaClient(): ResonantiaClient {
           ),
         },
       ], "transmutation");
+      const text = encodeResponse.content;
 
       if (!text) {
         throw new Error("model returned an empty encode response");
@@ -2879,10 +2948,11 @@ export function createWebResonantiaClient(): ResonantiaClient {
     async summarizeNode(rawNode: string): Promise<AiSummary | null> {
       const { config } = await readConfigBestEffort();
 
-      const text = await runModelChat(config, [
+      const summaryResponse = await runModelChat(config, [
         { role: "system", content: TRANSMUTE_PREAMBLE },
         { role: "user", content: rawNode },
       ], "transmutation");
+      const text = summaryResponse.content;
       if (!text) {
         return null;
       }

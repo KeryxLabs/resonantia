@@ -82,6 +82,20 @@ struct AiChatResponse {
     content: String,
     provider: String,
     model: String,
+    usage: Option<AiUsage>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AiUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+struct AiProviderResponse {
+    content: String,
+    usage: Option<AiUsage>,
 }
 
 #[derive(Serialize)]
@@ -96,6 +110,14 @@ struct OpenAiChatRequest {
 #[serde(rename_all = "camelCase")]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -542,7 +564,7 @@ async fn call_openai_chat(
     http: &reqwest::Client,
     ai: &AiConfig,
     messages: Vec<AiMessage>,
-) -> Result<String, AppError> {
+) -> Result<AiProviderResponse, AppError> {
     let url = format!("{}/chat/completions", ai.openai_base_url.trim_end_matches('/'));
     let payload = OpenAiChatRequest {
         model: ai.openai_model.clone(),
@@ -577,7 +599,13 @@ async fn call_openai_chat(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| AppError::internal("openai returned empty content".to_string()))?;
 
-    Ok(content)
+    let usage = parsed.usage.map(|raw| AiUsage {
+        prompt_tokens: raw.prompt_tokens,
+        completion_tokens: raw.completion_tokens,
+        total_tokens: raw.total_tokens,
+    });
+
+    Ok(AiProviderResponse { content, usage })
 }
 
 async fn ai_chat_handler(
@@ -600,11 +628,12 @@ async fn ai_chat_handler(
     enforce_ai_entitlement(&context, user_ctx.user_id.as_deref(), &purpose, &client).await?;
 
     let http = reqwest::Client::new();
-    let content = call_openai_chat(&http, ai, request.messages).await?;
+    let provider_response = call_openai_chat(&http, ai, request.messages).await?;
     Ok(Json(AiChatResponse {
-        content,
+        content: provider_response.content,
         provider: "openai".to_string(),
         model: ai.openai_model.clone(),
+        usage: provider_response.usage,
     }))
 }
 

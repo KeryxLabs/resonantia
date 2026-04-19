@@ -312,9 +312,19 @@
     aiStatus = null;
 
     try {
-      await copyText(prompt);
       dispatch('continueInApp', { sessionId, prompt, sourceNodeRaw, threadCandidates });
-      aiStatus = 'thread context copied · continued in resonantia';
+
+      let copied = false;
+      try {
+        await copyText(prompt);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+
+      aiStatus = copied
+        ? 'continued in resonantia · thread context copied'
+        : 'continued in resonantia';
       aiMenu = null;
     } catch (err) {
       aiStatus = String(err);

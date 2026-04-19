@@ -46,9 +46,9 @@
       detail: 'Launch Alkahest -> view the chamber open -> press Next.',
     },
     importare: {
-      title: 'open importare',
-      summary: 'Use Importare to bring in external STTP material and turn it into usable nodes quickly.',
-      detail: 'Open + compose -> choose importare, look around -> press Next.',
+      title: 'set alkahest import mode',
+      summary: 'Use Alkahest import mode to bring in external STTP material and store it directly.',
+      detail: 'In Alkahest phase 02, choose import mode -> review the import fields -> press Next.',
     },
     live: {
       title: 'switch to create live',

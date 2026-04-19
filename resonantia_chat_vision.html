@@ -1,0 +1,569 @@
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: transparent; }
+
+  .outer {
+    background: #0b0f15;
+    border-radius: 14px;
+    min-height: 720px;
+    display: flex;
+    position: relative;
+    overflow: hidden;
+    font-family: 'Inter', -apple-system, sans-serif;
+  }
+
+  canvas#stars {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.55;
+  }
+
+  .session-rail {
+    width: 0;
+    overflow: hidden;
+    transition: width 0.35s cubic-bezier(0.4,0,0.2,1);
+    border-right: 0.5px solid rgba(255,255,255,0.05);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0;
+    background: rgba(10,15,22,0.85);
+    z-index: 3;
+    flex-shrink: 0;
+  }
+  .session-rail.open {
+    width: 168px;
+    padding: 16px 10px;
+  }
+  .rail-label {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: rgba(255,255,255,0.18);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    padding: 0 2px;
+  }
+  .session-chip {
+    font-size: 10px;
+    color: rgba(180,210,200,0.55);
+    border: 0.5px solid rgba(100,180,165,0.15);
+    border-radius: 20px;
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: all 0.2s;
+    background: rgba(100,180,165,0.04);
+    letter-spacing: 0.02em;
+  }
+  .session-chip:hover {
+    color: rgba(100,190,170,0.9);
+    border-color: rgba(100,190,170,0.3);
+    background: rgba(100,190,170,0.08);
+  }
+  .session-chip.active {
+    color: rgba(100,190,170,0.95);
+    border-color: rgba(100,190,170,0.35);
+    background: rgba(100,190,170,0.1);
+  }
+
+  .chat-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    z-index: 2;
+    min-width: 0;
+  }
+
+  .chat-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 18px 10px;
+    gap: 10px;
+    border-bottom: 0.5px solid rgba(255,255,255,0.04);
+  }
+  .rail-toggle {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    border: 0.5px solid rgba(255,255,255,0.1);
+    background: transparent;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+  .rail-toggle:hover { border-color: rgba(100,190,170,0.3); background: rgba(100,190,170,0.06); }
+  .rail-toggle svg { width: 11px; height: 11px; }
+
+  .thread-tabs {
+    display: flex;
+    gap: 5px;
+    flex: 1;
+  }
+  .tab {
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 0.5px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.25);
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    background: transparent;
+    transition: all 0.2s;
+  }
+  .tab.active { border-color: rgba(100,190,170,0.3); color: rgba(100,190,170,0.8); background: rgba(100,190,170,0.07); }
+  .tab.add { border-style: dashed; color: rgba(255,255,255,0.18); }
+
+  .messages {
+    flex: 1;
+    padding: 20px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+    min-height: 260px;
+  }
+  .msg { display: flex; flex-direction: column; }
+  .msg.user { align-items: flex-end; }
+  .msg.ai { align-items: flex-start; }
+  .bubble {
+    max-width: 80%;
+    padding: 9px 13px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    letter-spacing: 0.01em;
+  }
+  .msg.user .bubble {
+    background: rgba(100,190,170,0.08);
+    border: 0.5px solid rgba(100,190,170,0.18);
+    color: rgba(195,230,220,0.9);
+    border-radius: 10px 10px 2px 10px;
+  }
+  .msg.ai .bubble {
+    background: rgba(255,255,255,0.03);
+    border: 0.5px solid rgba(255,255,255,0.06);
+    color: rgba(195,205,215,0.85);
+    border-radius: 10px 10px 10px 2px;
+  }
+  .empty-state {
+    margin: auto;
+    text-align: center;
+    font-size: 11px;
+    color: rgba(255,255,255,0.13);
+    font-style: italic;
+    line-height: 1.8;
+  }
+
+  .input-zone {
+    padding: 10px 14px 0;
+    border-top: 0.5px solid rgba(255,255,255,0.04);
+  }
+  .input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  textarea.msg-input {
+    flex: 1;
+    background: rgba(255,255,255,0.03);
+    border: 0.5px solid rgba(255,255,255,0.07);
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: rgba(200,210,220,0.85);
+    font-size: 12.5px;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+    transition: border-color 0.2s;
+    min-height: 40px;
+    max-height: 80px;
+  }
+  textarea.msg-input::placeholder { color: rgba(255,255,255,0.18); font-style: italic; }
+  textarea.msg-input:focus { border-color: rgba(100,190,170,0.28); }
+  .send-btn {
+    background: rgba(100,190,170,0.1);
+    border: 0.5px solid rgba(100,190,170,0.22);
+    border-radius: 8px;
+    padding: 9px 14px;
+    color: rgba(100,190,170,0.75);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.2s;
+    white-space: nowrap;
+  }
+  .send-btn:hover { background: rgba(100,190,170,0.18); }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px 12px;
+  }
+  .encode-hint {
+    font-size: 9px;
+    color: rgba(255,255,255,0);
+    font-style: italic;
+    letter-spacing: 0.04em;
+    transition: color 0.6s ease;
+  }
+
+  .avec-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    position: relative;
+  }
+  .avec-orb {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    position: relative;
+    border: 0.5px solid rgba(255,255,255,0.1);
+    overflow: hidden;
+    transition: border-color 0.3s, transform 0.2s;
+    flex-shrink: 0;
+  }
+  .avec-orb:hover { transform: scale(1.15); }
+  .avec-orb-fill {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    transition: height 0.7s ease;
+    border-radius: 0;
+  }
+  .avec-dot {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 3px; height: 3px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.5);
+  }
+
+  .avec-popover {
+    position: absolute;
+    bottom: 28px;
+    right: 0;
+    width: 220px;
+    background: rgba(12,18,28,0.97);
+    border: 0.5px solid rgba(100,190,170,0.15);
+    border-radius: 10px;
+    padding: 14px;
+    display: none;
+    z-index: 10;
+  }
+  .avec-popover.visible { display: block; }
+  .pop-title {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: rgba(255,255,255,0.25);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .pop-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 9px;
+  }
+  .pop-swatch {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .pop-label {
+    font-size: 10px;
+    color: rgba(255,255,255,0.35);
+    flex: 1;
+    letter-spacing: 0.04em;
+  }
+  .pop-track {
+    width: 70px;
+    height: 2px;
+    background: rgba(255,255,255,0.07);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .pop-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+  .pop-val {
+    font-size: 10px;
+    color: rgba(255,255,255,0.4);
+    min-width: 26px;
+    text-align: right;
+    letter-spacing: 0.02em;
+  }
+  .pop-divider {
+    border: none;
+    border-top: 0.5px solid rgba(255,255,255,0.05);
+    margin: 10px 0;
+  }
+  .pop-footer {
+    font-size: 9px;
+    color: rgba(255,255,255,0.18);
+    font-style: italic;
+    text-align: center;
+  }
+</style>
+
+<div class="outer">
+  <canvas id="stars"></canvas>
+
+  <div class="session-rail" id="rail">
+    <div class="rail-label">sessions</div>
+    <div class="session-chip active">resonantia-rs</div>
+    <div class="session-chip">release-polish-04-16</div>
+    <div class="session-chip">ux-settings</div>
+    <div class="session-chip">gateway-refactor</div>
+    <div class="session-chip">clock-sync-lesson</div>
+    <div class="session-chip">sttp-ui-psych</div>
+  </div>
+
+  <div class="chat-col">
+    <div class="chat-header">
+      <button class="rail-toggle" id="railBtn" onclick="toggleRail()" title="session context">
+        <svg viewBox="0 0 11 11" fill="none" stroke="rgba(150,200,190,0.6)" stroke-width="1.2" stroke-linecap="round">
+          <line x1="1" y1="3" x2="10" y2="3"/>
+          <line x1="1" y1="6" x2="7" y2="6"/>
+          <line x1="1" y1="9" x2="9" y2="9"/>
+        </svg>
+      </button>
+      <div class="thread-tabs">
+        <div class="tab active">thread 1</div>
+        <div class="tab add">+ tab</div>
+      </div>
+    </div>
+
+    <div class="messages" id="msgList">
+      <div class="empty-state" id="emptyState">
+        chat first,<br>then encode the thread into one protocol node.
+      </div>
+    </div>
+
+    <div class="input-zone">
+      <div class="input-row">
+        <textarea class="msg-input" id="msgInput" placeholder="message..." rows="2" onkeydown="handleKey(event)"></textarea>
+        <button class="send-btn" onclick="sendMsg()">send</button>
+      </div>
+      <div class="status-bar">
+        <div class="encode-hint" id="encodeHint">approaching encode threshold</div>
+        <div class="avec-row" id="avecRow" onclick="togglePopover()">
+          <div class="avec-orb" id="orb-ctx" style="border-color:rgba(100,190,170,0.25);" title="context">
+            <div class="avec-orb-fill" id="fill-ctx" style="background:rgba(100,190,170,0.55);height:0%;"></div>
+            <div class="avec-dot"></div>
+          </div>
+          <div class="avec-orb" id="orb-stab" style="border-color:rgba(100,160,220,0.2);" title="stability">
+            <div class="avec-orb-fill" id="fill-stab" style="background:rgba(100,160,220,0.55);height:91%;"></div>
+            <div class="avec-dot"></div>
+          </div>
+          <div class="avec-orb" id="orb-fric" style="border-color:rgba(200,130,80,0.2);" title="friction">
+            <div class="avec-orb-fill" id="fill-fric" style="background:rgba(200,130,80,0.55);height:20%;"></div>
+            <div class="avec-dot"></div>
+          </div>
+          <div class="avec-orb" id="orb-logic" style="border-color:rgba(160,120,220,0.2);" title="logic">
+            <div class="avec-orb-fill" id="fill-logic" style="background:rgba(160,120,220,0.55);height:86%;"></div>
+            <div class="avec-dot"></div>
+          </div>
+          <div class="avec-orb" id="orb-auto" style="border-color:rgba(100,190,120,0.2);" title="autonomy">
+            <div class="avec-orb-fill" id="fill-auto" style="background:rgba(100,190,120,0.55);height:82%;"></div>
+            <div class="avec-dot"></div>
+          </div>
+
+          <div class="avec-popover" id="avecPop">
+            <div class="pop-title">session avec · live</div>
+            <div class="pop-row">
+              <div class="pop-swatch" style="background:rgba(100,190,170,0.8);"></div>
+              <div class="pop-label">context</div>
+              <div class="pop-track"><div class="pop-fill" id="pf-ctx" style="background:rgba(100,190,170,0.7);width:0%;"></div></div>
+              <div class="pop-val" id="pv-ctx">0%</div>
+            </div>
+            <div class="pop-row">
+              <div class="pop-swatch" style="background:rgba(100,160,220,0.8);"></div>
+              <div class="pop-label">stability</div>
+              <div class="pop-track"><div class="pop-fill" id="pf-stab" style="background:rgba(100,160,220,0.7);width:91%;"></div></div>
+              <div class="pop-val" id="pv-stab">0.91</div>
+            </div>
+            <div class="pop-row">
+              <div class="pop-swatch" style="background:rgba(200,130,80,0.8);"></div>
+              <div class="pop-label">friction</div>
+              <div class="pop-track"><div class="pop-fill" id="pf-fric" style="background:rgba(200,130,80,0.7);width:20%;"></div></div>
+              <div class="pop-val" id="pv-fric">0.20</div>
+            </div>
+            <div class="pop-row">
+              <div class="pop-swatch" style="background:rgba(160,120,220,0.8);"></div>
+              <div class="pop-label">logic</div>
+              <div class="pop-track"><div class="pop-fill" id="pf-logic" style="background:rgba(160,120,220,0.7);width:86%;"></div></div>
+              <div class="pop-val" id="pv-logic">0.86</div>
+            </div>
+            <div class="pop-row">
+              <div class="pop-swatch" style="background:rgba(100,190,120,0.8);"></div>
+              <div class="pop-label">autonomy</div>
+              <div class="pop-track"><div class="pop-fill" id="pf-auto" style="background:rgba(100,190,120,0.7);width:82%;"></div></div>
+              <div class="pop-val" id="pv-auto">0.82</div>
+            </div>
+            <hr class="pop-divider">
+            <div class="pop-footer">from resonantia-rs · apr 16 2026</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const RESPONSES = [
+  "the avec scores crystallize from the conversation itself — stability is how grounded the exchange stays, friction is where resistance lives.",
+  "context compression doesn't flatten meaning. it distills it. the geometric form holds the resonance signature, not the syntax.",
+  "when psi aligns between user and model — 2.82 on both sides — that's when encoding reaches maximum fidelity.",
+  "each node is a memory you can navigate back into. not by keyword. by felt quality.",
+];
+
+let msgs = [];
+let ctx = 0;
+const THRESH = 72;
+let popOpen = false;
+let responding = false;
+let rIdx = 0;
+
+function toggleRail() {
+  const rail = document.getElementById('rail');
+  rail.classList.toggle('open');
+}
+
+function togglePopover() {
+  popOpen = !popOpen;
+  document.getElementById('avecPop').classList.toggle('visible', popOpen);
+}
+
+document.addEventListener('click', e => {
+  if (!document.getElementById('avecRow').contains(e.target)) {
+    popOpen = false;
+    document.getElementById('avecPop').classList.remove('visible');
+  }
+});
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+}
+
+function sendMsg() {
+  const input = document.getElementById('msgInput');
+  const v = input.value.trim();
+  if (!v || responding) return;
+  input.value = '';
+  addMsg('user', v);
+  ctx = Math.min(100, ctx + 11 + Math.random() * 7);
+  updateCtx();
+  responding = true;
+  setTimeout(() => {
+    addMsg('ai', RESPONSES[rIdx % RESPONSES.length]);
+    rIdx++;
+    ctx = Math.min(100, ctx + 4 + Math.random() * 4);
+    updateCtx();
+    responding = false;
+  }, 820);
+}
+
+function addMsg(role, text) {
+  msgs.push({ role, text });
+  const list = document.getElementById('msgList');
+  const empty = document.getElementById('emptyState');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  const bub = document.createElement('div');
+  bub.className = 'bubble';
+  bub.textContent = text;
+  div.appendChild(bub);
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+}
+
+function updateCtx() {
+  const pct = Math.round(ctx);
+  const fillCtx = document.getElementById('fill-ctx');
+  const hint = document.getElementById('encodeHint');
+  const pfCtx = document.getElementById('pf-ctx');
+  const pvCtx = document.getElementById('pv-ctx');
+
+  fillCtx.style.height = pct + '%';
+  pfCtx.style.width = pct + '%';
+  pvCtx.textContent = pct + '%';
+
+  const orb = document.getElementById('orb-ctx');
+
+  if (pct >= 90) {
+    fillCtx.style.background = 'rgba(210,90,70,0.65)';
+    orb.style.borderColor = 'rgba(210,90,70,0.4)';
+    hint.style.color = 'rgba(210,100,75,0.75)';
+    hint.textContent = 'context critical — encode now';
+  } else if (pct >= THRESH) {
+    fillCtx.style.background = 'rgba(200,155,70,0.65)';
+    orb.style.borderColor = 'rgba(200,155,70,0.35)';
+    hint.style.color = 'rgba(190,145,65,0.65)';
+    hint.textContent = 'encode threshold reached · ' + THRESH + '%';
+  } else if (pct > 35) {
+    fillCtx.style.background = 'rgba(100,190,170,0.55)';
+    orb.style.borderColor = 'rgba(100,190,170,0.28)';
+    hint.style.color = 'rgba(255,255,255,0.18)';
+    hint.textContent = (100 - pct) + '% remaining';
+  } else {
+    fillCtx.style.background = 'rgba(100,190,170,0.55)';
+    orb.style.borderColor = 'rgba(100,190,170,0.22)';
+    hint.style.color = 'rgba(255,255,255,0)';
+  }
+}
+
+function drawStars() {
+  const canvas = document.getElementById('stars');
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  canvas.width = W; canvas.height = H;
+  const ctx2 = canvas.getContext('2d');
+  const nodes = [
+    {x:0.12,y:0.15,r:28,core:3},{x:0.85,y:0.1,r:20,core:2.5},
+    {x:0.9,y:0.75,r:38,core:4},{x:0.08,y:0.7,r:18,core:2},
+    {x:0.5,y:0.08,r:14,core:2},{x:0.75,y:0.5,r:22,core:2.5},
+    {x:0.22,y:0.88,r:16,core:2},{x:0.6,y:0.85,r:12,core:1.5},
+  ];
+  nodes.forEach(n => {
+    const x = n.x*W, y = n.y*H;
+    ctx2.beginPath();
+    ctx2.arc(x, y, n.r, 0, Math.PI*2);
+    ctx2.strokeStyle = 'rgba(100,190,170,0.07)';
+    ctx2.lineWidth = 0.5;
+    ctx2.stroke();
+    ctx2.beginPath();
+    ctx2.arc(x, y, n.r*0.35, 0, Math.PI*2);
+    ctx2.fillStyle = 'rgba(100,190,170,0.06)';
+    ctx2.fill();
+    ctx2.beginPath();
+    ctx2.arc(x, y, n.core, 0, Math.PI*2);
+    ctx2.fillStyle = 'rgba(100,190,170,0.22)';
+    ctx2.fill();
+  });
+  for (let i=0; i<nodes.length; i++) {
+    for (let j=i+1; j<nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      const dist = Math.hypot((a.x-b.x)*W,(a.y-b.y)*H);
+      if (dist < 340) {
+        ctx2.beginPath();
+        ctx2.moveTo(a.x*W, a.y*H);
+        ctx2.lineTo(b.x*W, b.y*H);
+        ctx2.strokeStyle = `rgba(100,190,170,${0.025*(1-dist/340)})`;
+        ctx2.lineWidth = 0.4;
+        ctx2.stroke();
+      }
+    }
+  }
+}
+
+setTimeout(drawStars, 60);
+</script>

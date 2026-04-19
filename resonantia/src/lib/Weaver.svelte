@@ -14,12 +14,24 @@
   import AlkahestPanel from './components/AlkahestPanel.svelte';
   import { getCloudAuthStatus, getGatewayAuthToken, signOutCloud, redirectToCloudSignIn, getCloudAccount } from './cloudAuth';
   import { getGatewayBaseUrl as getManagedGatewayBaseUrl } from './config';
+  import { computeComposeTokenUsage, warmupComposeTokenizer, type ComposeTokenUsage } from './composeTokenBudget';
+  import type {
+    ComposeCalibrationAvec,
+    ComposeContextNode,
+    ComposeContextSession,
+    ComposeLiveUiProps,
+    ComposeMessage,
+    ComposeMode,
+    ComposeProviderUsage,
+    CrossSessionRoutingPreference,
+  } from './components/compose/types';
   import type { WalkthroughMode, WalkthroughPhase } from './walkthrough';
   import { resonantiaClient } from './resonantiaClient';
   import type {
     AiSummary,
     AvecState,
     ChatMessage,
+    ComposeChatResponse,
     GraphResponse,
     GraphSessionDto,
     GraphNodeDto,
@@ -98,6 +110,8 @@
   let alkahestSessionOptions: GraphSessionDto[] = [];
   const ONBOARDING_DISMISSED_KEY = 'resonantia:onboarding-dismissed:v1';
   const ADVENTURE_COMPLETED_KEY  = 'resonantia:adventure-completed:v1';
+  const COMPOSE_CONTINUE_ROUTING_KEY = 'resonantia:compose-continue-routing:v1';
+  const COMPOSE_CHAT_SETTINGS_KEY = 'resonantia:compose-chat-settings:v1';
   const ADVENTURE_SESSION_FALLBACK = 'first-user-experience-resonantia';
   const WALKTHROUGH_SESSION_SEED = 'resonantia-demo';
   let onboardingOpen = false;
@@ -676,11 +690,8 @@
       case 'alkahest':
         return '[data-tour-target="alkahest"]';
       case 'importare':
-        return '[data-tour-target="compose-importare"]';
+        return '[data-tour-target="alkahest-import"]';
       case 'live':
-        if (composeOpen && composeMode === 'importare') {
-          return '[data-tour-target="compose-switch-live"]';
-        }
         return '[data-tour-target="compose-live"]';
       default:
         return null;
@@ -698,9 +709,9 @@
       case 'alkahest':
         return ['[data-tour-target="alkahest"]'];
       case 'importare':
-        return ['[data-tour-target="compose-importare"]', '[data-tour-target="compose-toggle"]'];
+        return ['[data-tour-target="alkahest-import"]', '[data-tour-target="alkahest"]'];
       case 'live':
-        return ['[data-tour-target="compose-live"]', '[data-tour-target="compose-switch-live"]', '[data-tour-target="compose-toggle"]'];
+        return ['[data-tour-target="compose-live"]', '[data-tour-target="compose-toggle"]'];
       default:
         return [];
     }
@@ -721,6 +732,10 @@
 
   $: if (!onboardingOpen) {
     walkthroughStepSatisfied = false;
+  }
+
+  $: if (onboardingOpen && walkthroughStep === 'importare' && alkahestMode === 'import') {
+    walkthroughStepSatisfied = true;
   }
 
   function markWalkthroughStepSatisfied(step: WalkthroughStep) {
@@ -875,7 +890,6 @@
           holdMs: 220,
           cueDelayMs: 260,
           before: () => {
-            closeAlkahestPanel();
             menuOpen = false;
           },
         });
@@ -885,8 +899,8 @@
           holdMs: 220,
           cueDelayMs: 260,
           before: () => {
+            closeAlkahestPanel();
             composeModeMenuOpen = false;
-            closeComposeDrawer();
           },
         });
         break;
@@ -2685,25 +2699,9 @@
   // ── Compose ──────────────────────────────────────────────────
   let composeOpen     = false;
   let composeModeMenuOpen = false;
-  let composeMode: 'live' | 'importare' = 'live';
+  let composeMode: ComposeMode = 'live';
   let composeDraft    = '';
-  type ComposeMessage = {
-    role: 'user' | 'assistant';
-    content: string;
-    at: string;
-  };
-  type ComposeContextSession = {
-    sessionId: string;
-    label: string;
-  };
-  type ComposeContextNodeItem = {
-    key: string;
-    sessionId: string;
-    title: string;
-    timestamp: string;
-    tier: string;
-    psi: number;
-    preview: string;
+  type ComposeContextNodeItem = ComposeContextNode & {
     raw: string;
   };
   type ComposeTabState = {
@@ -2716,6 +2714,7 @@
     contextSessions: ComposeContextSession[];
     browseSessionId: string;
     injectedNodes: ComposeContextNodeItem[];
+    providerUsage: ComposeProviderUsage;
   };
   type ContinueInAppPayload = {
     sessionId: string;
@@ -2723,6 +2722,12 @@
     sourceNodeRaw: string;
     threadCandidates: ComposeContextSession[];
   };
+  type ComposeContinueTargetMode = 'match-session' | 'active-tab';
+  type ComposeContinueRoutingPreference = CrossSessionRoutingPreference;
+  type ComposeEncodeSaveOrigin = 'manual' | 'auto';
+  const COMPOSE_AUTO_ENCODE_THRESHOLD_MIN = 60;
+  const COMPOSE_AUTO_ENCODE_THRESHOLD_MAX = 85;
+  const COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT = 72;
   const COMPOSE_MAX_TABS = 3;
   const COMPOSE_RECENT_CONTEXT_SESSION_LIMIT = 5;
   const COMPOSE_CONTEXT_NODE_FETCH_LIMIT = 240;
@@ -2754,7 +2759,36 @@
   let composeContextNodesLoading = false;
   let composeContextNodesError: string | null = null;
   let composeInjectedNodes: ComposeContextNodeItem[] = [];
-  let composeLiveUiProps: Record<string, unknown> = {};
+  let composeContinueChooserOpen = false;
+  let composeContinueChooserPayload: ContinueInAppPayload | null = null;
+  let composeContinueChooserSourceSessionId = '';
+  let composeContinueChooserActiveSessionId = '';
+  let composeContinueChooserRemember = false;
+  let composeContinueRoutingPreference: ComposeContinueRoutingPreference = 'ask';
+  let composeAutoEncodeEnabled = false;
+  let composeAutoEncodeThresholdPercent = COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT;
+  let composeAutoEncodeLastTriggerKey = '';
+  let composeProviderUsage: ComposeProviderUsage = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    responseCount: 0,
+    provider: '',
+    model: '',
+    hasUsageData: false,
+  };
+  let composeTokenUsage: ComposeTokenUsage = {
+    contextTokens: 0,
+    draftTokens: 0,
+    projectedTurnTokens: 0,
+    contextWindowTokens: 128_000,
+    usagePercent: 0,
+    thresholdPercent: COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT,
+    thresholdTokens: Math.round((128_000 * COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT) / 100),
+    remainingTokens: 128_000,
+  };
+  let composeTokenizerRevision = 0;
+  let composeLiveUiProps = {} as ComposeLiveUiProps;
   let syncPullLoading = false;
   let syncPullError: string | null = null;
   let syncPullResult: SyncNowResponse | null = null;
@@ -2768,6 +2802,136 @@
   let syncDetailTimeLabel = 'never';
   let syncDetailTimestamp: Date | null = null;
   let syncDetailTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function readComposeContinueRoutingPreference(): ComposeContinueRoutingPreference {
+    if (typeof localStorage === 'undefined') {
+      return 'ask';
+    }
+
+    try {
+      const raw = localStorage.getItem(COMPOSE_CONTINUE_ROUTING_KEY);
+      return raw === 'match-session' || raw === 'active-tab' ? raw : 'ask';
+    } catch {
+      return 'ask';
+    }
+  }
+
+  function persistComposeContinueRoutingPreference(value: ComposeContinueRoutingPreference) {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+
+    try {
+      if (value === 'ask') {
+        localStorage.removeItem(COMPOSE_CONTINUE_ROUTING_KEY);
+      } else {
+        localStorage.setItem(COMPOSE_CONTINUE_ROUTING_KEY, value);
+      }
+    } catch {
+      // Ignore storage failures in strict/private browser contexts.
+    }
+  }
+
+  function setComposeContinueRoutingPreference(value: ComposeContinueRoutingPreference) {
+    composeContinueRoutingPreference = value;
+    persistComposeContinueRoutingPreference(value);
+  }
+
+  function clearComposeContinueRoutingPreference() {
+    setComposeContinueRoutingPreference('ask');
+  }
+
+  function clampComposeAutoEncodeThreshold(value: number): number {
+    const rounded = Math.round(value);
+    return Math.min(COMPOSE_AUTO_ENCODE_THRESHOLD_MAX, Math.max(COMPOSE_AUTO_ENCODE_THRESHOLD_MIN, rounded));
+  }
+
+  function readComposeChatSettings(): { autoEncodeEnabled: boolean; autoEncodeThresholdPercent: number } {
+    if (typeof localStorage === 'undefined') {
+      return {
+        autoEncodeEnabled: false,
+        autoEncodeThresholdPercent: COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT,
+      };
+    }
+
+    try {
+      const raw = localStorage.getItem(COMPOSE_CHAT_SETTINGS_KEY);
+      if (!raw) {
+        return {
+          autoEncodeEnabled: false,
+          autoEncodeThresholdPercent: COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT,
+        };
+      }
+
+      const parsed = JSON.parse(raw) as {
+        autoEncodeEnabled?: unknown;
+        autoEncodeThresholdPercent?: unknown;
+      };
+      const autoEncodeEnabled = parsed.autoEncodeEnabled === true;
+      const rawThreshold = Number(parsed.autoEncodeThresholdPercent);
+      const thresholdPercent = Number.isFinite(rawThreshold)
+        ? clampComposeAutoEncodeThreshold(rawThreshold)
+        : COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT;
+
+      return {
+        autoEncodeEnabled,
+        autoEncodeThresholdPercent: thresholdPercent,
+      };
+    } catch {
+      return {
+        autoEncodeEnabled: false,
+        autoEncodeThresholdPercent: COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT,
+      };
+    }
+  }
+
+  function persistComposeChatSettings() {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+
+    try {
+      localStorage.setItem(
+        COMPOSE_CHAT_SETTINGS_KEY,
+        JSON.stringify({
+          autoEncodeEnabled: composeAutoEncodeEnabled,
+          autoEncodeThresholdPercent: clampComposeAutoEncodeThreshold(composeAutoEncodeThresholdPercent),
+        }),
+      );
+    } catch {
+      // Ignore storage failures in strict/private browser contexts.
+    }
+  }
+
+  function setComposeAutoEncodeEnabled(value: boolean) {
+    composeAutoEncodeEnabled = value;
+    composeAutoEncodeLastTriggerKey = '';
+    persistComposeChatSettings();
+  }
+
+  function setComposeAutoEncodeThresholdPercent(value: number) {
+    composeAutoEncodeThresholdPercent = clampComposeAutoEncodeThreshold(value);
+    composeAutoEncodeLastTriggerKey = '';
+    persistComposeChatSettings();
+  }
+
+  $: {
+    composeTokenizerRevision;
+    const outboundMessages = composeApiMessages(composeMessages);
+    const systemContext = buildComposeInjectedContextSystemMessage();
+    if (systemContext) {
+      outboundMessages.unshift(systemContext);
+    }
+
+    composeTokenUsage = computeComposeTokenUsage({
+      messages: outboundMessages,
+      draft: composeDraft,
+      modelProvider,
+      openaiModel,
+      ollamaModel,
+      thresholdPercent: composeAutoEncodeThresholdPercent,
+    });
+  }
 
   $: composeLiveUiProps = {
     tabs: composeTabs.map((tab) => ({ id: tab.id, title: tab.title, sessionId: tab.sessionId })),
@@ -2792,6 +2956,21 @@
     selectContextSession: selectComposeContextSession,
     injectContextNode: injectComposeContextNode,
     removeInjectedNode: removeComposeInjectedNode,
+    crossSessionRoutingPreference: composeContinueRoutingPreference,
+    clearCrossSessionRoutingPreference: clearComposeContinueRoutingPreference,
+    tokenUsage: composeTokenUsage,
+    providerUsage: composeProviderUsage,
+    calibrationAvec: {
+      stability: calibStability,
+      friction: calibFriction,
+      logic: calibLogic,
+      autonomy: calibAutonomy,
+      psi: calibrationPsi,
+    } as ComposeCalibrationAvec,
+    autoEncodeEnabled: composeAutoEncodeEnabled,
+    autoEncodeThresholdPercent: composeAutoEncodeThresholdPercent,
+    setAutoEncodeEnabled: setComposeAutoEncodeEnabled,
+    setAutoEncodeThresholdPercent: setComposeAutoEncodeThresholdPercent,
   };
 
   type TelescopeRange = {
@@ -3240,7 +3419,7 @@
   }
 
   type AlkahestScope = 'session' | 'sessions' | 'timeline' | 'resonance';
-  type AlkahestMode = 'export' | 'distill' | 'both';
+  type AlkahestMode = 'export' | 'distill' | 'both' | 'import';
   type ResonanceDim = 'stability' | 'friction' | 'logic' | 'autonomy';
 
   type AlkahestScopeScan = {
@@ -3305,6 +3484,7 @@
   let alkahestMode: AlkahestMode = 'both';
   let alkahestSessionId = '';
   let alkahestSessionIds: string[] = [];
+  let alkahestImportNodeDraft = '';
   let alkahestTimelineDays = 30;
   let alkahestResonanceDim: ResonanceDim = 'logic';
   let alkahestPsiMin = 2.2;
@@ -3645,6 +3825,7 @@
     alkahestMode = 'both';
     alkahestSessionId = selectedSession ? canonicalSessionId(selectedSession) : '';
     alkahestSessionIds = selectedSession ? [canonicalSessionId(selectedSession)] : [];
+    alkahestImportNodeDraft = '';
     alkahestTimelineDays = 30;
     alkahestResonanceDim = 'logic';
     alkahestPsiMin = 2.2;
@@ -3692,15 +3873,41 @@
     alkahestStatus = null;
 
     try {
-      const scan = await collectAlkahestScopeScan();
-      if (scan.nodes.length === 0) {
+      let superNode: string | null = null;
+      let storeStatus: string | null = null;
+      const importMode = alkahestMode === 'import';
+      const scan = importMode ? null : await collectAlkahestScopeScan();
+
+      if (!importMode && scan && scan.nodes.length === 0) {
         throw new Error('no nodes matched this Alkahest scope');
       }
 
-      let superNode: string | null = null;
-      let storeStatus: string | null = null;
+      if (importMode) {
+        const targetSessionId = alkahestTargetSessionId.trim() || defaultAlkahestTargetSessionId();
+        const rawNode = alkahestImportNodeDraft.trim();
 
-      if (shouldDistillForAlkahestMode(alkahestMode)) {
+        if (!rawNode) {
+          throw new Error('paste one complete STTP node before importing');
+        }
+
+        alkahestTargetSessionId = targetSessionId;
+        const stored = await resonantiaClient.storeContext({
+          node: rawNode,
+          sessionId: targetSessionId,
+        });
+
+        if (!stored.valid) {
+          throw new Error(stored.validationError ?? 'imported node failed STTP validation');
+        }
+
+        const upsertStatus = stored.upsertStatus ?? (stored.duplicateSkipped ? 'duplicate' : 'stored');
+        storeStatus = stored.duplicateSkipped ? 'duplicate skipped' : upsertStatus;
+        superNode = rawNode;
+        alkahestSuperNodePreview = rawNode;
+        await loadGraph();
+      }
+
+      if (!importMode && shouldDistillForAlkahestMode(alkahestMode) && scan) {
         const targetSessionId = alkahestTargetSessionId.trim() || defaultAlkahestTargetSessionId();
         alkahestTargetSessionId = targetSessionId;
 
@@ -3735,19 +3942,22 @@
         }
       }
 
-      if (shouldExportForAlkahestMode(alkahestMode)) {
+      if (!importMode && shouldExportForAlkahestMode(alkahestMode) && scan) {
         const bundle = buildAlkahestBundle(scan, superNode);
         downloadAlkahestBundle(bundle);
       }
 
       const outcomes: string[] = [];
-      if (shouldDistillForAlkahestMode(alkahestMode)) {
+      if (importMode) {
+        outcomes.push('node imported');
+      }
+      if (!importMode && shouldDistillForAlkahestMode(alkahestMode)) {
         outcomes.push('super node distilled');
       }
       if (storeStatus) {
         outcomes.push(`stored ${storeStatus}`);
       }
-      if (shouldExportForAlkahestMode(alkahestMode)) {
+      if (!importMode && shouldExportForAlkahestMode(alkahestMode)) {
         outcomes.push('bundle exported');
       }
 
@@ -3977,13 +4187,33 @@
     return base.replace(/_/g, ' ');
   }
 
+  function composeContextSummary(rawNode: string) {
+    const summaryMatch = rawNode.match(/context_summary(?:\.[0-9]+)?\s*:\s*([^,\n}⟩]+)/i);
+    if (!summaryMatch) {
+      return '';
+    }
+
+    const cleaned = summaryMatch[1]
+      .trim()
+      .replace(/^['"]|['"]$/g, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ');
+
+    return cleaned;
+  }
+
   function composeNodePreview(rawNode: string) {
+    const contextSummary = composeContextSummary(rawNode);
+    if (contextSummary) {
+      return contextSummary.length > 210 ? `${contextSummary.slice(0, 210)}...` : contextSummary;
+    }
+
     const normalized = rawNode.replace(/\s+/g, ' ').trim();
     if (!normalized) {
       return '(empty node)';
     }
 
-    return normalized.length > 210 ? `${normalized.slice(0, 210)}...` : normalized;
+    return 'summary unavailable';
   }
 
   function normalizeComposeContextSessions(candidates: ComposeContextSession[]) {
@@ -4068,6 +4298,7 @@
       contextSessions,
       browseSessionId: '',
       injectedNodes: [],
+      providerUsage: createEmptyComposeProviderUsage(),
     };
   }
 
@@ -4095,6 +4326,7 @@
       contextSessions: [...composeContextSessions],
       browseSessionId: composeContextBrowseSessionId,
       injectedNodes: [...composeInjectedNodes],
+      providerUsage: { ...composeProviderUsage },
     };
 
     composeTabs = [
@@ -4226,13 +4458,16 @@
       return;
     }
 
-    if (composeInjectedNodes.some((node) => node.key === selected.key)) {
-      return;
+    if (!composeInjectedNodes.some((node) => node.key === selected.key)) {
+      composeInjectedNodes = [...composeInjectedNodes, selected];
     }
 
-    composeInjectedNodes = [...composeInjectedNodes, selected];
     composeContextNodesError = null;
     snapshotActiveComposeTab();
+
+    void sendComposeMessage(buildComposeNodeInjectionPrompt(selected), {
+      includeInjectedSystemContext: false,
+    });
   }
 
   function removeComposeInjectedNode(nodeKey: string) {
@@ -4280,6 +4515,10 @@
     composeMessages = [...tab.messages];
     configureComposeContextSessions(tab.contextSessions, tab.browseSessionId, Boolean(tab.browseSessionId));
     composeInjectedNodes = [...tab.injectedNodes];
+    composeProviderUsage = {
+      ...createEmptyComposeProviderUsage(),
+      ...(tab.providerUsage ?? {}),
+    };
     composeContextNodesError = null;
     composeContextNodes = [];
 
@@ -4360,6 +4599,7 @@
 
   function closeComposeDrawer() {
     snapshotActiveComposeTab();
+    closeComposeContinueChooser();
     composeOpen = false;
   }
 
@@ -4388,8 +4628,18 @@
     };
   }
 
-  function openCompose(mode: 'live' | 'importare' = 'live') {
+  function buildComposeNodeInjectionPrompt(node: ComposeContextNodeItem): string {
+    return [
+      'continue this same thread with the following injected raw node as additional context.',
+      `context_session_id: ${node.sessionId}`,
+      'full_node:',
+      node.raw,
+    ].join('\n');
+  }
+
+  function openCompose(mode: 'live' = 'live') {
     snapshotActiveComposeTab();
+    closeComposeContinueChooser();
     composeModeMenuOpen = false;
     composeMode = mode;
 
@@ -4407,7 +4657,7 @@
     composePromptCopied = false;
     composePromptCopyError = null;
     composeContextNodesError = null;
-    composePasteNodeOpen = mode === 'importare';
+    composePasteNodeOpen = false;
     composePasteNodeDraft = '';
     composePasteNodeLoading = false;
     composeOpen = true;
@@ -4417,28 +4667,72 @@
     }
   }
 
-  function continueThreadInCompose(event: CustomEvent<ContinueInAppPayload>) {
-    const sessionId = event.detail.sessionId.trim();
-    const prompt = event.detail.prompt.trim();
-    const sourceNodeRaw = event.detail.sourceNodeRaw.trim();
-    const incomingSessions = normalizeComposeContextSessions(event.detail.threadCandidates ?? []);
+  function closeComposeContinueChooser() {
+    composeContinueChooserOpen = false;
+    composeContinueChooserPayload = null;
+    composeContinueChooserSourceSessionId = '';
+    composeContinueChooserActiveSessionId = '';
+    composeContinueChooserRemember = false;
+  }
 
-    if (!sessionId || !prompt || !sourceNodeRaw) {
-      return;
+  function openComposeContinueChooser(detail: ContinueInAppPayload, activeSessionId: string) {
+    composeContinueChooserPayload = detail;
+    composeContinueChooserSourceSessionId = detail.sessionId;
+    composeContinueChooserActiveSessionId = activeSessionId;
+    composeContinueChooserRemember = false;
+    composeContinueChooserOpen = true;
+  }
+
+  function resolveContinueTargetTabId(sourceSessionId: string, targetMode: ComposeContinueTargetMode): string {
+    if (targetMode === 'active-tab') {
+      if (composeActiveTabId && composeTabs.some((tab) => tab.id === composeActiveTabId)) {
+        return composeActiveTabId;
+      }
+
+      if (composeTabs[0]) {
+        return composeTabs[0].id;
+      }
+
+      if (composeTabs.length < COMPOSE_MAX_TABS) {
+        const seedSession = sourceSessionId || canonicalSessionId(selectedSession);
+        const nextTab = buildDefaultComposeTabState(seedSession);
+        composeTabs = [...composeTabs, nextTab];
+        return nextTab.id;
+      }
+
+      return '';
     }
 
-    closeCard();
-    snapshotActiveComposeTab();
-
-    let targetTabId = composeTabs.find((tab) => tab.sessionId === sessionId)?.id ?? '';
+    let targetTabId = composeTabs.find((tab) => tab.sessionId === sourceSessionId)?.id ?? '';
     if (!targetTabId && composeTabs.length < COMPOSE_MAX_TABS) {
-      const nextTab = buildDefaultComposeTabState(sessionId);
+      const nextTab = buildDefaultComposeTabState(sourceSessionId);
       composeTabs = [...composeTabs, nextTab];
       targetTabId = nextTab.id;
     }
     if (!targetTabId) {
       targetTabId = composeActiveTabId || composeTabs[0]?.id || '';
     }
+    return targetTabId;
+  }
+
+  function applyContinueThreadInCompose(
+    detail: ContinueInAppPayload,
+    targetMode: ComposeContinueTargetMode,
+  ) {
+    const sourceSessionId = detail.sessionId.trim();
+    const prompt = detail.prompt.trim();
+    const sourceNodeRaw = detail.sourceNodeRaw.trim();
+    const incomingSessions = normalizeComposeContextSessions(detail.threadCandidates ?? []);
+
+    if (!sourceSessionId || !prompt || !sourceNodeRaw) {
+      return;
+    }
+
+    closeCard();
+    closeComposeContinueChooser();
+    snapshotActiveComposeTab();
+
+    const targetTabId = resolveContinueTargetTabId(sourceSessionId, targetMode);
     if (!targetTabId) {
       return;
     }
@@ -4455,14 +4749,22 @@
     composePromptCopyError = null;
 
     loadComposeTab(targetTabId);
-    composeSessionId = sessionId;
-    composeContextOriginSessionId = sessionId;
+    const targetSessionId = targetMode === 'active-tab'
+      ? (composeSessionId.trim() || sourceSessionId)
+      : sourceSessionId;
+
+    composeSessionId = targetSessionId;
+    composeContextOriginSessionId = sourceSessionId;
     configureComposeContextSessions(
       [
         ...composeContextSessions,
         {
-          sessionId,
-          label: composeSessionLabel(sessionId) || sessionId,
+          sessionId: targetSessionId,
+          label: composeSessionLabel(targetSessionId) || targetSessionId,
+        },
+        {
+          sessionId: sourceSessionId,
+          label: composeSessionLabel(sourceSessionId) || sourceSessionId,
         },
         ...incomingSessions,
       ],
@@ -4471,7 +4773,7 @@
     );
     composeContextBrowseSessionId = '';
     composeContextNodes = [];
-    seedComposeInjectedNode(sessionId, sourceNodeRaw);
+    seedComposeInjectedNode(sourceSessionId, sourceNodeRaw);
 
     if (composeContextBrowseSessionId) {
       void loadComposeContextNodes(composeContextBrowseSessionId);
@@ -4483,7 +4785,55 @@
     composeOpen = true;
     snapshotActiveComposeTab();
 
-    void sendComposeMessage(prompt);
+    void sendComposeMessage(prompt, {
+      includeInjectedSystemContext: false,
+      crossSessionSourceSessionId: targetMode === 'active-tab' ? sourceSessionId : '',
+    });
+  }
+
+  function chooseComposeContinueTarget(targetMode: ComposeContinueTargetMode) {
+    const pending = composeContinueChooserPayload;
+    if (!pending) {
+      closeComposeContinueChooser();
+      return;
+    }
+
+    if (composeContinueChooserRemember) {
+      setComposeContinueRoutingPreference(targetMode);
+    }
+
+    applyContinueThreadInCompose(pending, targetMode);
+  }
+
+  function continueThreadInCompose(event: CustomEvent<ContinueInAppPayload>) {
+    const sessionId = event.detail.sessionId.trim();
+    const prompt = event.detail.prompt.trim();
+    const sourceNodeRaw = event.detail.sourceNodeRaw.trim();
+    const threadCandidates = normalizeComposeContextSessions(event.detail.threadCandidates ?? []);
+
+    if (!sessionId || !prompt || !sourceNodeRaw) {
+      return;
+    }
+
+    const normalizedDetail: ContinueInAppPayload = {
+      sessionId,
+      prompt,
+      sourceNodeRaw,
+      threadCandidates,
+    };
+
+    const activeSessionId = composeTabs.find((tab) => tab.id === composeActiveTabId)?.sessionId.trim() ?? '';
+    if (activeSessionId && activeSessionId !== sessionId) {
+      if (composeContinueRoutingPreference !== 'ask') {
+        applyContinueThreadInCompose(normalizedDetail, composeContinueRoutingPreference);
+        return;
+      }
+
+      openComposeContinueChooser(normalizedDetail, activeSessionId);
+      return;
+    }
+
+    applyContinueThreadInCompose(normalizedDetail, 'match-session');
   }
 
   function toggleComposeModeMenu() {
@@ -4494,12 +4844,6 @@
     markWalkthroughStepSatisfied('live');
     composeModeMenuOpen = false;
     openCompose('live');
-  }
-
-  function openComposeImportare() {
-    markWalkthroughStepSatisfied('importare');
-    composeModeMenuOpen = false;
-    openCompose('importare');
   }
 
   function switchComposeToLive() {
@@ -4519,13 +4863,14 @@
       composeError = null;
     }
 
-    ensureComposeContextSession(composeSessionId);
     snapshotActiveComposeTab();
   }
 
   function clearComposeConversation() {
     composeDraft = '';
     composeMessages = [];
+    composeProviderUsage = createEmptyComposeProviderUsage();
+    composeAutoEncodeLastTriggerKey = '';
     composeError = null;
     composeResult = null;
     composeEncodePromptSent = false;
@@ -4550,6 +4895,66 @@
       role: message.role,
       content: message.content,
     }));
+  }
+
+  function composeAutoEncodeSignature(): string {
+    if (composeMessages.length === 0) {
+      return '';
+    }
+
+    const last = composeMessages[composeMessages.length - 1];
+    return [
+      composeActiveTabId,
+      composeSessionId.trim(),
+      String(composeMessages.length),
+      last?.at ?? '',
+      String(composeInjectedNodes.length),
+    ].join('|');
+  }
+
+  function createEmptyComposeProviderUsage(): ComposeProviderUsage {
+    return {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      responseCount: 0,
+      provider: '',
+      model: '',
+      hasUsageData: false,
+    };
+  }
+
+  function normalizeTokenUsageValue(value: number | undefined): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      return null;
+    }
+
+    return Math.round(value);
+  }
+
+  function applyComposeProviderUsage(response: ComposeChatResponse) {
+    const provider = response.provider?.trim() ?? '';
+    const model = response.model?.trim() ?? '';
+    const promptTokens = normalizeTokenUsageValue(response.usage?.promptTokens);
+    const completionTokens = normalizeTokenUsageValue(response.usage?.completionTokens);
+    const explicitTotalTokens = normalizeTokenUsageValue(response.usage?.totalTokens);
+
+    const hasUsageDelta = promptTokens !== null || completionTokens !== null || explicitTotalTokens !== null;
+    const totalTokens = explicitTotalTokens ?? ((promptTokens ?? 0) + (completionTokens ?? 0));
+
+    if (!hasUsageDelta && !provider && !model) {
+      return;
+    }
+
+    composeProviderUsage = {
+      promptTokens: composeProviderUsage.promptTokens + (hasUsageDelta ? (promptTokens ?? 0) : 0),
+      completionTokens: composeProviderUsage.completionTokens + (hasUsageDelta ? (completionTokens ?? 0) : 0),
+      totalTokens: composeProviderUsage.totalTokens + (hasUsageDelta ? totalTokens : 0),
+      responseCount: composeProviderUsage.responseCount + (hasUsageDelta ? 1 : 0),
+      provider: provider || composeProviderUsage.provider,
+      model: model || composeProviderUsage.model,
+      hasUsageData: composeProviderUsage.hasUsageData || hasUsageDelta,
+    };
   }
 
   async function copyTextToClipboard(text: string) {
@@ -4637,7 +5042,13 @@
     }
   }
 
-  async function sendComposeMessage(seedText?: string) {
+  async function sendComposeMessage(
+    seedText?: string,
+    options: {
+      includeInjectedSystemContext?: boolean;
+      crossSessionSourceSessionId?: string;
+    } = {},
+  ) {
     const text = (seedText ?? composeDraft).trim();
     if (!text || composeReplyLoading || composeLoading) {
       if (seedText?.trim() && composeReplyLoading) {
@@ -4657,13 +5068,22 @@
     composeContextNodesError = null;
     ensureComposeContextSession(sessionId);
 
+    const crossSessionSourceSessionId = options.crossSessionSourceSessionId?.trim() ?? '';
+    const userMessage: ComposeMessage = {
+      role: 'user',
+      content: text,
+      at: new Date().toISOString(),
+    };
+    if (crossSessionSourceSessionId && crossSessionSourceSessionId !== sessionId) {
+      userMessage.crossSession = {
+        sourceSessionId: crossSessionSourceSessionId,
+        targetSessionId: sessionId,
+      };
+    }
+
     const nextMessages: ComposeMessage[] = [
       ...composeMessages,
-      {
-        role: 'user',
-        content: text,
-        at: new Date().toISOString(),
-      },
+      userMessage,
     ];
 
     composeMessages = nextMessages;
@@ -4673,7 +5093,10 @@
     composeReplyLoading = true;
 
     try {
-      const systemContext = buildComposeInjectedContextSystemMessage();
+      const includeInjectedSystemContext = options.includeInjectedSystemContext ?? true;
+      const systemContext = includeInjectedSystemContext
+        ? buildComposeInjectedContextSystemMessage()
+        : null;
       const outboundMessages = composeApiMessages(nextMessages);
       if (systemContext) {
         outboundMessages.unshift(systemContext);
@@ -4686,12 +5109,15 @@
         })
       );
 
-      if (reply?.trim()) {
+      applyComposeProviderUsage(reply);
+      const replyContent = (reply.content ?? '').trim();
+
+      if (replyContent) {
         composeMessages = [
           ...nextMessages,
           {
             role: 'assistant',
-            content: reply.trim(),
+            content: replyContent,
             at: new Date().toISOString(),
           },
         ];
@@ -4817,25 +5243,33 @@
     }
   }
 
-  async function submitCompose() {
-    if (composeLoading || composeMessages.length === 0 || composeReplyLoading) return;
+  async function encodeSaveAndContinueComposeThread(origin: ComposeEncodeSaveOrigin): Promise<boolean> {
+    if (composeLoading || composeMessages.length === 0 || composeReplyLoading) {
+      return false;
+    }
+
     const sessionId = composeSessionId.trim();
     if (!sessionId) {
       composeError = 'session id is required';
-      return;
+      return false;
     }
 
-    composeLoading = true; composeError = null; composeResult = null; composeEncodePromptSent = false;
+    composeLoading = true;
+    composeError = null;
+    composeResult = null;
+    composeEncodePromptSent = false;
+
     try {
       const messages = composeApiMessages(composeMessages);
       const maxEncodeAttempts = 2;
       let parserErrorHint: string | undefined;
       let previousNodeCandidate: string | undefined;
+      let encodedNode = '';
       let res: StoreContextResponse | null = null;
 
       for (let attempt = 0; attempt < maxEncodeAttempts; attempt += 1) {
         composeEncodePromptSent = true;
-        const encodedNode = await runManagedAiWithTokenRetry(() =>
+        encodedNode = await runManagedAiWithTokenRetry(() =>
           resonantiaClient.encodeCompose({
             sessionId,
             messages,
@@ -4857,7 +5291,7 @@
         const retryableParseError = /ParseFailure|MissingLayer|missing required layer|missing layer/i.test(validationError);
         if (!retryableParseError || attempt >= maxEncodeAttempts - 1) {
           composeError = validationError || 'store rejected by local policy';
-          return;
+          return false;
         }
 
         parserErrorHint = validationError;
@@ -4866,7 +5300,7 @@
 
       if (!res || !res.valid) {
         composeError = res?.validationError ?? 'store rejected by local policy';
-        return;
+        return false;
       }
 
       const status = res.upsertStatus ?? (res.duplicateSkipped ? 'duplicate' : 'created');
@@ -4875,15 +5309,48 @@
         duplicateSkipped: Boolean(res.duplicateSkipped),
         status,
       };
-      composeDraft = '';
+
+      if (encodedNode.trim()) {
+        seedComposeInjectedNode(sessionId, encodedNode);
+      }
+
       composeMessages = [];
+      composeAutoEncodeLastTriggerKey = '';
+      if (origin === 'manual') {
+        composeDraft = '';
+      }
+
       snapshotActiveComposeTab();
       await loadGraph();
-    } catch (err) { composeError = String(err); }
-    finally      {
+      return true;
+    } catch (err) {
+      composeError = String(err);
+      return false;
+    } finally {
       composeLoading = false;
       composeEncodePromptSent = false;
       snapshotActiveComposeTab();
+    }
+  }
+
+  async function submitCompose() {
+    await encodeSaveAndContinueComposeThread('manual');
+  }
+
+  $: {
+    const autoSignature = composeAutoEncodeSignature();
+    if (
+      composeMode === 'live'
+      && composeAutoEncodeEnabled
+      && autoSignature
+      && composeDraft.trim().length === 0
+      && !composeReplyLoading
+      && !composeLoading
+      && composeTokenUsage.usagePercent >= composeAutoEncodeThresholdPercent
+      && autoSignature !== composeAutoEncodeLastTriggerKey
+    ) {
+      composeAutoEncodeLastTriggerKey = autoSignature;
+      void encodeSaveAndContinueComposeThread('auto');
     }
   }
 
@@ -5264,6 +5731,15 @@
   onMount(() => {
     onboardingDismissed = readOnboardingDismissedState();
     adventureCompleted  = readAdventureCompleted();
+    composeContinueRoutingPreference = readComposeContinueRoutingPreference();
+    const composeChatSettings = readComposeChatSettings();
+    composeAutoEncodeEnabled = composeChatSettings.autoEncodeEnabled;
+    composeAutoEncodeThresholdPercent = composeChatSettings.autoEncodeThresholdPercent;
+    void warmupComposeTokenizer().then(() => {
+      composeTokenizerRevision += 1;
+    }).catch(() => {
+      // Keep fallback token estimation when tokenizer warmup fails.
+    });
     adventureHydrated   = true;
     onboardingHydrated  = true;
     ctx = canvas.getContext('2d')!;
@@ -5383,7 +5859,6 @@
     menuOpen={composeModeMenuOpen}
     on:toggle={toggleComposeModeMenu}
     on:live={openComposeLive}
-    on:importare={openComposeImportare}
   />
 
   <AlkahestPanel
@@ -5405,6 +5880,7 @@
     bind:resonanceDim={alkahestResonanceDim}
     bind:psiMin={alkahestPsiMin}
     bind:prompt={alkahestPrompt}
+    bind:importNodeDraft={alkahestImportNodeDraft}
     bind:targetSessionId={alkahestTargetSessionId}
     bind:storeDistilledNode={alkahestStoreDistilledNode}
     preflightNodeCount={alkahestPreflightNodeCount}
@@ -5504,6 +5980,69 @@
           <button class="rename-session-btn" type="button" on:click={() => void submitRenameSessionDialog()} disabled={renameSessionLoading}>
             {renameSessionLoading ? 'saving…' : 'save'}
           </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if composeContinueChooserOpen}
+    <div
+      class="compose-continue-overlay"
+      role="presentation"
+      on:pointerdown={(event) => {
+        if (event.target === event.currentTarget) {
+          closeComposeContinueChooser();
+        }
+      }}
+    >
+      <div
+        class="compose-continue-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="choose continue target"
+        tabindex="0"
+        on:keydown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            closeComposeContinueChooser();
+          }
+        }}
+      >
+        <h3 class="compose-continue-title">route this continuation</h3>
+        <p class="compose-continue-subtitle">the node session differs from your active live thread</p>
+        <p class="compose-continue-context">
+          node session: {composeSessionLabel(composeContinueChooserSourceSessionId) || composeContinueChooserSourceSessionId}
+          <br />
+          active thread: {composeSessionLabel(composeContinueChooserActiveSessionId) || composeContinueChooserActiveSessionId}
+        </p>
+
+        <div class="compose-continue-options">
+          <button
+            class="compose-continue-option"
+            type="button"
+            on:click={() => chooseComposeContinueTarget('match-session')}
+          >
+            <span class="compose-continue-option-title">use node session thread</span>
+            <span class="compose-continue-option-meta">switch to the node session and continue there</span>
+          </button>
+
+          <button
+            class="compose-continue-option"
+            type="button"
+            on:click={() => chooseComposeContinueTarget('active-tab')}
+          >
+            <span class="compose-continue-option-title">insert into active chat</span>
+            <span class="compose-continue-option-meta">keep your current thread and inject this node as cross-session context</span>
+          </button>
+        </div>
+
+        <label class="compose-continue-remember">
+          <input type="checkbox" bind:checked={composeContinueChooserRemember} />
+          <span>remember this routing choice until reset in compose</span>
+        </label>
+
+        <div class="compose-continue-actions">
+          <button class="compose-continue-cancel" type="button" on:click={closeComposeContinueChooser}>cancel</button>
         </div>
       </div>
     </div>
@@ -5820,10 +6359,149 @@
     color: rgba(192, 204, 231, 0.78);
   }
 
+  .compose-continue-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 28;
+    background: radial-gradient(circle at 48% 36%, rgba(26, 36, 52, 0.28), rgba(4, 6, 11, 0.76));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+  }
+
+  .compose-continue-card {
+    width: min(460px, calc(100vw - 34px));
+    border-radius: 14px;
+    padding: 18px;
+    border: 0.5px solid rgba(204, 226, 255, 0.18);
+    background: linear-gradient(170deg, rgba(10, 16, 28, 0.95), rgba(8, 12, 21, 0.96));
+    box-shadow: 0 20px 44px rgba(2, 4, 10, 0.54), 0 0 20px rgba(103, 154, 226, 0.2);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    outline: none;
+  }
+
+  .compose-continue-title {
+    margin: 0;
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: 18px;
+    letter-spacing: 0.03em;
+    color: rgba(236, 242, 255, 0.92);
+  }
+
+  .compose-continue-subtitle {
+    margin: 8px 0 10px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: rgba(181, 198, 228, 0.64);
+    text-transform: lowercase;
+  }
+
+  .compose-continue-context {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 9px;
+    border: 0.5px solid rgba(170, 198, 240, 0.22);
+    background: rgba(11, 16, 27, 0.72);
+    font-size: 10px;
+    line-height: 1.6;
+    letter-spacing: 0.03em;
+    color: rgba(218, 230, 255, 0.8);
+  }
+
+  .compose-continue-options {
+    margin-top: 12px;
+    display: grid;
+    gap: 8px;
+  }
+
+  .compose-continue-option {
+    width: 100%;
+    border-radius: 10px;
+    border: 0.5px solid rgba(164, 188, 238, 0.3);
+    background: rgba(20, 31, 54, 0.56);
+    color: rgba(228, 237, 255, 0.9);
+    padding: 9px 10px;
+    text-align: left;
+    display: grid;
+    gap: 4px;
+    cursor: pointer;
+    transition: border-color 0.14s ease, background 0.14s ease;
+  }
+
+  .compose-continue-option:hover {
+    border-color: rgba(205, 223, 255, 0.66);
+    background: rgba(44, 62, 100, 0.6);
+  }
+
+  .compose-continue-option-title {
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .compose-continue-option-meta {
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: rgba(195, 212, 240, 0.8);
+    text-transform: lowercase;
+  }
+
+  .compose-continue-remember {
+    margin-top: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: rgba(198, 214, 242, 0.82);
+    text-transform: lowercase;
+    cursor: pointer;
+  }
+
+  .compose-continue-remember input {
+    margin: 0;
+    width: 12px;
+    height: 12px;
+    accent-color: rgba(126, 172, 242, 0.9);
+  }
+
+  .compose-continue-actions {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .compose-continue-cancel {
+    border-radius: 999px;
+    border: 0.5px solid rgba(130, 153, 196, 0.3);
+    background: rgba(36, 44, 66, 0.4);
+    color: rgba(201, 213, 235, 0.84);
+    font-family: 'Departure Mono', 'Courier New', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: border-color 0.14s ease, background 0.14s ease;
+  }
+
+  .compose-continue-cancel:hover {
+    border-color: rgba(178, 202, 246, 0.56);
+    background: rgba(62, 77, 112, 0.48);
+  }
+
   @media (hover: none) and (pointer: coarse) {
     .rename-session-input {
       font-size: 16px;
       line-height: 1.35;
+    }
+
+    .compose-continue-option {
+      padding: 11px 12px;
     }
   }
 </style>

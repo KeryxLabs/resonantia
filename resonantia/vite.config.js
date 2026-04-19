@@ -185,15 +185,22 @@ function devGatewayProxyPlugin() {
       }
     };
 
-    server.middlewares.use((req, res, next) => {
-      const requestUrl = new URL(req.url ?? "/", "http://localhost");
-      if (!matchProxyPrefix(requestUrl.pathname)) {
-        next();
-        return;
-      }
+    server.middlewares.use(
+      /**
+       * @param {import("http").IncomingMessage} req
+       * @param {import("http").ServerResponse} res
+       * @param {import("connect").NextFunction} next
+       */
+      (req, res, next) => {
+        const requestUrl = new URL(req.url ?? "/", "http://localhost");
+        if (!matchProxyPrefix(requestUrl.pathname)) {
+          next();
+          return;
+        }
 
-      void handler(req, res);
-    });
+        void handler(req, res);
+      },
+    );
   };
 
   return {

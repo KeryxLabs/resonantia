@@ -1,48 +1,27 @@
 <script lang="ts">
-  import { formatTimestamp } from '@resonantia/core';
-  import { tick } from 'svelte';
-
-  type ComposeMode = 'live' | 'importare';
-
-  type ComposeMessage = {
-    role: 'user' | 'assistant';
-    content: string;
-    at: string;
-  };
-
-  type ComposeTabInfo = {
-    id: string;
-    title: string;
-    sessionId: string;
-  };
-
-  type ComposeContextSession = {
-    sessionId: string;
-    label: string;
-  };
-
-  type ComposeContextNode = {
-    key: string;
-    sessionId: string;
-    title: string;
-    timestamp: string;
-    tier: string;
-    psi: number;
-    preview: string;
-  };
-
-  type ComposeInjectedNode = {
-    key: string;
-    title: string;
-    sessionId: string;
-    timestamp: string;
-  };
-
-  type ComposeResult = {
-    psi: number;
-    duplicateSkipped: boolean;
-    status: 'created' | 'updated' | 'duplicate' | 'skipped';
-  } | null;
+  import ComposeHeaderSession from './compose/ComposeHeaderSession.svelte';
+  import ComposeTabs from './compose/ComposeTabs.svelte';
+  import ComposeThread from './compose/ComposeThread.svelte';
+  import ComposeInputRow from './compose/ComposeInputRow.svelte';
+  import ComposeFooterActions from './compose/ComposeFooterActions.svelte';
+  import ComposeUtilityActions from './compose/ComposeUtilityActions.svelte';
+  import ComposeChatSettingsPanel from './compose/ComposeChatSettingsPanel.svelte';
+  import ComposeSessionNodesPopover from './compose/ComposeSessionNodesPopover.svelte';
+  import ComposeBottomTracker from './compose/ComposeBottomTracker.svelte';
+  import ComposePastePanel from './compose/ComposePastePanel.svelte';
+  import type {
+    ComposeCalibrationAvec,
+    ComposeContextNode,
+    ComposeContextSession,
+    ComposeInjectedNode,
+    ComposeMessage,
+    ComposeMode,
+    ComposeProviderUsage,
+    ComposeResult,
+    ComposeTabInfo,
+    ComposeTokenUsage,
+    CrossSessionRoutingPreference,
+  } from './compose/types';
 
   export let open = false;
   export let mode: ComposeMode = 'live';
@@ -70,6 +49,35 @@
   export let pasteNodeOpen = false;
   export let pasteNodeDraft = '';
   export let pasteNodeLoading = false;
+  export let crossSessionRoutingPreference: CrossSessionRoutingPreference = 'ask';
+  export let tokenUsage: ComposeTokenUsage = {
+    contextTokens: 0,
+    draftTokens: 0,
+    projectedTurnTokens: 0,
+    contextWindowTokens: 1,
+    usagePercent: 0,
+    thresholdPercent: 72,
+    thresholdTokens: 1,
+    remainingTokens: 0,
+  };
+  export let providerUsage: ComposeProviderUsage = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    responseCount: 0,
+    provider: '',
+    model: '',
+    hasUsageData: false,
+  };
+  export let calibrationAvec: ComposeCalibrationAvec = {
+    stability: 0.5,
+    friction: 0.2,
+    logic: 0.8,
+    autonomy: 0.9,
+    psi: 2.4,
+  };
+  export let autoEncodeEnabled = false;
+  export let autoEncodeThresholdPercent = 72;
 
   export let onClose: () => void = () => {};
   export let onSessionInput: () => void = () => {};
@@ -81,6 +89,9 @@
   export let switchComposeToLive: () => void = () => {};
   export let saveComposePastedNode: () => Promise<void> | void = () => {};
   export let submitCompose: () => Promise<void> | void = () => {};
+  export let clearCrossSessionRoutingPreference: () => void = () => {};
+  export let setAutoEncodeEnabled: (enabled: boolean) => void = () => {};
+  export let setAutoEncodeThresholdPercent: (thresholdPercent: number) => void = () => {};
   export let selectComposeTab: (tabId: string) => void = () => {};
   export let createComposeTab: () => void = () => {};
   export let closeComposeTab: (tabId: string) => void = () => {};
@@ -94,8 +105,13 @@
   let pastePrettyView = false;
   let composeAutoScrollKey = '';
   let contextPopupOpen = false;
-  let drawerEl: HTMLDivElement | null = null;
-  let contextPanelEl: HTMLDivElement | null = null;
+  let chatSettingsOpen = false;
+  let liveToolsOpen = false;
+  let sessionNodesPopoverOpen = false;
+  let sessionNodesPopoverTop = 88;
+  let previousPasteNodeOpen = false;
+  let liveShellEl: HTMLDivElement | null = null;
+  let sessionNodesPopoverEl: HTMLDivElement | null = null;
 
   const STTP_KEYWORDS = new Set([
     'manual',
@@ -122,6 +138,17 @@
 
   $: if (!open || mode !== 'live') {
     contextPopupOpen = false;
+    chatSettingsOpen = false;
+    liveToolsOpen = false;
+    sessionNodesPopoverOpen = false;
+  }
+
+  $: {
+    if (mode === 'live' && pasteNodeOpen && !previousPasteNodeOpen) {
+      liveToolsOpen = true;
+    }
+
+    previousPasteNodeOpen = pasteNodeOpen;
   }
 
   $: {
@@ -152,23 +179,88 @@
     queueMicrotask(syncPasteEditorScroll);
   }
 
-  async function revealContextPanel() {
-    await tick();
-
-    if (!drawerEl || !contextPanelEl) {
+  function positionSessionNodesPopover(triggerEl: HTMLElement) {
+    if (!liveShellEl) {
       return;
     }
 
-    const drawerRect = drawerEl.getBoundingClientRect();
-    const panelRect = contextPanelEl.getBoundingClientRect();
-    const targetTop = drawerEl.scrollTop + (panelRect.top - drawerRect.top) - 8;
-    drawerEl.scrollTo({ top: Math.max(targetTop, 0), behavior: 'smooth' });
+    const shellRect = liveShellEl.getBoundingClientRect();
+    const triggerRect = triggerEl.getBoundingClientRect();
+    const desiredTop = (triggerRect.top - shellRect.top) + (triggerRect.height * 0.5) - 36;
+    const minTop = 76;
+    const maxTop = Math.max(minTop, liveShellEl.clientHeight - 320);
+    sessionNodesPopoverTop = Math.max(minTop, Math.min(maxTop, desiredTop));
+  }
+
+  function handleSessionChipClick(session: ComposeContextSession, event: MouseEvent) {
+    if (!contextPopupOpen) {
+      contextPopupOpen = true;
+    }
+
+    const target = event.currentTarget;
+    const sameSession = contextBrowseSessionId === session.sessionId;
+    selectContextSession(session.sessionId);
+
+    if (sameSession && sessionNodesPopoverOpen) {
+      sessionNodesPopoverOpen = false;
+      return;
+    }
+
+    sessionNodesPopoverOpen = true;
+    if (target instanceof HTMLElement) {
+      positionSessionNodesPopover(target);
+    }
+  }
+
+  function handleWindowPointerDown(event: PointerEvent) {
+    if (!sessionNodesPopoverOpen) {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+
+    if (sessionNodesPopoverEl?.contains(target)) {
+      return;
+    }
+
+    if (target instanceof Element && target.closest('.compose-session-chip')) {
+      return;
+    }
+
+    sessionNodesPopoverOpen = false;
   }
 
   function toggleContextPopup() {
     contextPopupOpen = !contextPopupOpen;
-    if (contextPopupOpen) {
-      void revealContextPanel();
+    if (!contextPopupOpen) {
+      sessionNodesPopoverOpen = false;
+      return;
+    }
+
+    chatSettingsOpen = false;
+    liveToolsOpen = false;
+  }
+
+  function toggleChatSettingsPopup() {
+    if (!liveToolsOpen) {
+      liveToolsOpen = true;
+    }
+
+    chatSettingsOpen = !chatSettingsOpen;
+    if (chatSettingsOpen) {
+      contextPopupOpen = false;
+      sessionNodesPopoverOpen = false;
+    }
+  }
+
+  function toggleLiveTools() {
+    liveToolsOpen = !liveToolsOpen;
+    if (liveToolsOpen) {
+      contextPopupOpen = false;
+      sessionNodesPopoverOpen = false;
     }
   }
 
@@ -313,212 +405,228 @@
   }
 </script>
 
+<svelte:window on:pointerdown={handleWindowPointerDown} />
+
 {#if open}
-  <div class="drawer drawer-compose" class:importare={mode === 'importare'} bind:this={drawerEl} role="dialog" aria-label={mode === 'importare' ? 'Import node' : 'Compose context'}>
-    <div class="drawer-header">
-      <span class="drawer-title">{mode === 'importare' ? 'importare' : 'compose'}</span>
-      <button class="close-btn" on:click={onClose}>✕</button>
-    </div>
-    <input
-      class="drawer-input drawer-session-input"
-      type="text"
-      placeholder="session id"
-      bind:value={sessionId}
-      on:input={onSessionInput}
-    />
+  <div class="drawer drawer-compose" class:importare={mode === 'importare'} role="dialog" aria-label={mode === 'importare' ? 'Import node' : 'Live chat'}>
     {#if mode === 'live'}
-      <div class="compose-tabs" aria-label="compose live tabs">
-        {#each tabs as tab}
-          <div class="compose-tab" class:active={tab.id === activeTabId}>
-            <button class="compose-tab-btn" on:click={() => selectComposeTab(tab.id)}>{tab.title}</button>
-            {#if tabs.length > 1}
-              <button class="compose-tab-close" aria-label="close tab" on:click={() => closeComposeTab(tab.id)}>x</button>
-            {/if}
-          </div>
-        {/each}
-        {#if tabs.length < maxTabs}
-          <button class="compose-tab-add" on:click={createComposeTab}>+ tab</button>
-        {/if}
-      </div>
+      <div class="compose-live-shell" bind:this={liveShellEl}>
+        <div class="compose-live-stars" aria-hidden="true"></div>
 
-      <div class="compose-thread" bind:this={composeThreadEl} aria-live="polite">
-        {#if messages.length === 0}
-          <p class="compose-empty">chat first, then encode the thread into one protocol node.</p>
-        {:else}
-          {#each messages as message}
-            <article class={`compose-bubble ${message.role === 'assistant' ? 'assistant' : 'user'}`}>
-              <header class="compose-bubble-meta">
-                <span>{message.role === 'assistant' ? 'resonare' : 'you'}</span>
-                <small>{formatTimestamp(message.at)}</small>
-              </header>
-              <p>{message.content}</p>
-            </article>
-          {/each}
-        {/if}
-
-        {#if replyLoading}
-          <article class="compose-bubble assistant compose-pending">
-            <header class="compose-bubble-meta">
-              <span>resonare</span>
-              <small>thinking…</small>
-            </header>
-          </article>
-        {/if}
-      </div>
-
-      <div class="compose-entry">
-        <textarea
-          class="drawer-textarea compose-input"
-          placeholder="message…"
-          bind:value={draft}
-          rows="3"
-          on:input={onDraftInput}
-          on:keydown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void sendComposeMessage();
-            }
-          }}
-        ></textarea>
-        <button
-          class="drawer-btn submit compose-send"
-          on:click={sendComposeMessage}
-          disabled={loading || replyLoading || !draft.trim() || !sessionId.trim()}
-        >
-          {replyLoading ? 'thinking…' : 'send'}
-        </button>
-      </div>
-    {:else}
-      <p class="compose-importare-note">paste one complete node and store it directly.</p>
-    {/if}
-
-    <div class="compose-utility-actions">
-      <button class="compose-link-btn compose-link-pill compose-link-pill-gold" on:click={copyComposeEncodePrompt} disabled={promptCopyLoading || loading || replyLoading}>
-        {promptCopyLoading ? 'copying distill prompt…' : promptCopied ? 'distill prompt copied' : 'copy distill prompt'}
-      </button>
-      {#if mode === 'live'}
-        <span class="compose-utility-divider">•</span>
-        <button class="compose-link-btn compose-link-pill" on:click={toggleComposePasteNode} disabled={pasteNodeLoading || loading || replyLoading}>
-          {pasteNodeOpen ? 'hide paste save' : 'paste node to save'}
-        </button>
-        <span class="compose-utility-divider">•</span>
-        <button
-          class="compose-link-btn compose-link-pill compose-link-pill-context"
-          class:active={contextPopupOpen}
-          on:click={toggleContextPopup}
-          disabled={loading || replyLoading}
-          aria-expanded={contextPopupOpen}
-        >
-          {contextPopupOpen ? 'hide session context' : 'session context'}
-        </button>
-        <span class="compose-utility-divider">•</span>
-        <button class="compose-link-btn compose-link-pill" on:click={clearComposeConversation} disabled={loading || replyLoading}>clear thread</button>
-      {:else}
-        <span class="compose-utility-divider">•</span>
-        <button class="compose-link-btn compose-link-pill compose-link-pill-live" data-tour-target="compose-switch-live" on:click={switchComposeToLive} disabled={pasteNodeLoading}>switch to create live</button>
-      {/if}
-    </div>
-
-    {#if mode === 'live' && contextPopupOpen}
-      <div class="compose-context-panel compose-context-popover" bind:this={contextPanelEl} aria-label="context injector">
-        <div class="compose-context-head">
-          <span>session context</span>
-          <small>{injectedNodes.length} injected</small>
-        </div>
-
-        {#if contextSessions.length > 0}
-          <div class="compose-context-sessions">
+        <aside class="compose-session-rail" class:open={contextPopupOpen} aria-label="thread sessions">
+          <p class="compose-rail-label">sessions</p>
+          {#if contextSessions.length > 0}
             {#each contextSessions as session}
               <button
-                class="compose-context-session"
+                class="compose-session-chip"
+                class:active={contextBrowseSessionId === session.sessionId}
                 class:origin={contextOriginSessionId === session.sessionId}
-                class:selected={contextBrowseSessionId === session.sessionId}
-                on:click={() => selectContextSession(session.sessionId)}
+                on:click={(event) => handleSessionChipClick(session, event)}
               >
                 {session.label}
               </button>
             {/each}
-          </div>
-        {:else}
-          <p class="compose-thread-note">no sessions attached to this thread yet.</p>
-        {/if}
+          {:else}
+            <p class="compose-session-empty">no linked sessions yet</p>
+          {/if}
+        </aside>
 
-        {#if !contextBrowseSessionId}
-          <p class="compose-thread-note">choose a session chip to browse raw nodes.</p>
-        {:else if contextNodesLoading}
-          <p class="compose-thread-note">loading session nodes...</p>
-        {:else if contextNodesError}
-          <p class="drawer-error compose-thread-error">{contextNodesError}</p>
-        {:else if contextNodes.length > 0}
-          <div class="compose-context-node-list">
-            {#each contextNodes as node}
-              <article class="compose-context-node">
-                <div class="compose-context-node-body">
-                  <p class="compose-context-node-title">{node.title}</p>
-                  <p class="compose-context-node-meta">{formatTimestamp(node.timestamp)} · {node.sessionId}</p>
-                  <p class="compose-context-node-preview">{node.preview}</p>
-                </div>
-                <button class="compose-context-inject" on:click={() => injectContextNode(node.key)}>inject raw</button>
-              </article>
-            {/each}
-          </div>
-        {:else}
-          <p class="compose-thread-note">no raw nodes found for this session yet.</p>
-        {/if}
+        <div class="compose-chat-col">
+          <div class="compose-chat-header">
+            <button class="compose-rail-toggle" type="button" aria-expanded={contextPopupOpen} on:click={toggleContextPopup} title="session context">
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
 
-        {#if injectedNodes.length > 0}
-          <div class="compose-injected-strip">
-            {#each injectedNodes as node}
-              <button class="compose-injected-chip" on:click={() => removeInjectedNode(node.key)}>
-                x {node.title}
-              </button>
-            {/each}
+            <ComposeTabs
+              {tabs}
+              {activeTabId}
+              {maxTabs}
+              {selectComposeTab}
+              {createComposeTab}
+              {closeComposeTab}
+            />
+
+            <button
+              class="compose-tools-toggle"
+              type="button"
+              aria-expanded={liveToolsOpen}
+              on:click={toggleLiveTools}
+              title="chat tools"
+            >
+              {liveToolsOpen ? 'hide tools' : 'tools'}
+            </button>
+
+            <button class="compose-close-btn" type="button" on:click={onClose} aria-label="close chat">x</button>
           </div>
-        {/if}
+
+          <div class="compose-session-row">
+            <span class="compose-session-tag">session</span>
+            <input
+              class="compose-session-input"
+              type="text"
+              placeholder="session id"
+              bind:value={sessionId}
+              on:input={onSessionInput}
+            />
+          </div>
+
+          <ComposeThread {messages} {replyLoading} bind:threadEl={composeThreadEl} />
+
+          <div class="compose-input-zone">
+            <ComposeInputRow
+              bind:draft
+              {sessionId}
+              {loading}
+              {replyLoading}
+              {onDraftInput}
+              {sendComposeMessage}
+            />
+
+            <ComposeBottomTracker
+              {mode}
+              {sessionId}
+              {tokenUsage}
+              {providerUsage}
+              {calibrationAvec}
+              {autoEncodeEnabled}
+              {autoEncodeThresholdPercent}
+            />
+          </div>
+
+          {#if contextPopupOpen && sessionNodesPopoverOpen}
+            <div class="compose-session-nodes-popover-wrap" style={`top: ${sessionNodesPopoverTop}px;`}>
+              <ComposeSessionNodesPopover
+                sessionId={contextBrowseSessionId}
+                {contextNodes}
+                {contextNodesLoading}
+                {contextNodesError}
+                {injectedNodes}
+                {injectContextNode}
+                {removeInjectedNode}
+                bind:popoverEl={sessionNodesPopoverEl}
+              />
+            </div>
+          {/if}
+
+          {#if liveToolsOpen}
+            <div class="compose-live-tools-wrap">
+              <ComposeUtilityActions
+                {mode}
+                {loading}
+                {replyLoading}
+                {promptCopyLoading}
+                {promptCopied}
+                {pasteNodeOpen}
+                {pasteNodeLoading}
+                {contextPopupOpen}
+                {chatSettingsOpen}
+                {crossSessionRoutingPreference}
+                {copyComposeEncodePrompt}
+                {toggleComposePasteNode}
+                {toggleContextPopup}
+                {clearComposeConversation}
+                {toggleChatSettingsPopup}
+                {clearCrossSessionRoutingPreference}
+                {switchComposeToLive}
+                compact={true}
+              />
+
+              {#if chatSettingsOpen}
+                <ComposeChatSettingsPanel
+                  {autoEncodeEnabled}
+                  {autoEncodeThresholdPercent}
+                  {loading}
+                  {replyLoading}
+                  {setAutoEncodeEnabled}
+                  {setAutoEncodeThresholdPercent}
+                />
+              {/if}
+
+              {#if pasteNodeOpen}
+                <ComposePastePanel
+                  {mode}
+                  {sessionId}
+                  bind:pasteNodeDraft
+                  {pasteNodeLoading}
+                  {pastePrettyView}
+                  {pasteNodePreviewHtml}
+                  bind:pasteInputEl
+                  bind:pastePreviewEl
+                  {togglePastePrettyView}
+                  {syncPasteEditorScroll}
+                  {toggleComposePasteNode}
+                  {saveComposePastedNode}
+                />
+              {/if}
+
+              <div class="compose-live-tools-actions">
+                <button
+                  class="compose-live-encode-btn"
+                  type="button"
+                  on:click={submitCompose}
+                  disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}
+                >
+                  {loading ? 'encoding…' : 'encode + save + continue'}
+                </button>
+              </div>
+            </div>
+          {/if}
+        </div>
       </div>
+    {:else}
+      <ComposeHeaderSession
+        {mode}
+        bind:sessionId
+        {onSessionInput}
+        {onClose}
+      />
+
+      <p class="compose-importare-note">paste one complete node and store it directly.</p>
+
+      <ComposeUtilityActions
+        {mode}
+        {loading}
+        {replyLoading}
+        {promptCopyLoading}
+        {promptCopied}
+        {pasteNodeOpen}
+        {pasteNodeLoading}
+        {contextPopupOpen}
+        {chatSettingsOpen}
+        {crossSessionRoutingPreference}
+        {copyComposeEncodePrompt}
+        {toggleComposePasteNode}
+        {toggleContextPopup}
+        {clearComposeConversation}
+        {toggleChatSettingsPopup}
+        {clearCrossSessionRoutingPreference}
+        {switchComposeToLive}
+      />
     {/if}
 
     {#if promptCopyError}
       <p class="drawer-error">copy failed: {promptCopyError}</p>
     {/if}
-    {#if mode === 'importare' || pasteNodeOpen}
-      <div class="compose-paste-panel">
-        <p class="compose-paste-intro">paste a complete STTP node and save it directly.</p>
-        <div class="compose-paste-toolbar">
-          <button class="compose-link-btn" type="button" on:click={togglePastePrettyView}>
-            {pastePrettyView ? 'pretty view on' : 'pretty view off'}
-          </button>
-          {#if pastePrettyView}
-            <span class="compose-paste-mode-note">visual only</span>
-          {/if}
-        </div>
-        <div class="compose-paste-editor" class:pretty={pastePrettyView}>
-          <div class="compose-paste-preview-wrap" bind:this={pastePreviewEl} aria-hidden="true">
-            <pre class="compose-paste-preview">{@html pasteNodePreviewHtml}</pre>
-          </div>
-          {#if !pastePrettyView}
-            <textarea
-              class="drawer-textarea compose-paste-input compose-paste-input-highlighted"
-              placeholder="paste one full STTP node"
-              bind:this={pasteInputEl}
-              bind:value={pasteNodeDraft}
-              rows="9"
-              wrap="soft"
-              on:input={syncPasteEditorScroll}
-              on:scroll={syncPasteEditorScroll}
-            ></textarea>
-          {/if}
-        </div>
-        <div class="compose-paste-actions">
-          {#if mode === 'live'}
-            <button class="drawer-btn cancel" on:click={toggleComposePasteNode} disabled={pasteNodeLoading}>cancel paste</button>
-          {/if}
-          <button class="drawer-btn submit" on:click={saveComposePastedNode} disabled={pasteNodeLoading || !pasteNodeDraft.trim() || !sessionId.trim()}>
-            {pasteNodeLoading ? 'saving…' : 'save pasted node'}
-          </button>
-        </div>
-      </div>
+
+    {#if mode === 'importare'}
+      <ComposePastePanel
+        {mode}
+        {sessionId}
+        bind:pasteNodeDraft
+        {pasteNodeLoading}
+        {pastePrettyView}
+        {pasteNodePreviewHtml}
+        bind:pasteInputEl
+        bind:pastePreviewEl
+        {togglePastePrettyView}
+        {syncPasteEditorScroll}
+        {toggleComposePasteNode}
+        {saveComposePastedNode}
+      />
     {/if}
+
     {#if mode === 'live' && loading && encodePromptSent}
       <p class="drawer-success compose-encode-note">encoding prompt sent</p>
     {/if}
@@ -528,14 +636,18 @@
         {composeOutcomeLabel(result.status, result.duplicateSkipped)} · Ψ {result.psi.toFixed(4)}
       </p>
     {/if}
-    <div class="drawer-actions compose-actions">
-      <button class="drawer-btn cancel" on:click={onClose}>{mode === 'importare' ? 'close' : 'cancel'}</button>
-      {#if mode === 'live'}
-        <button class="drawer-btn submit" on:click={submitCompose} disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}>
-          {loading ? 'encoding…' : 'encode + store'}
-        </button>
-      {/if}
-    </div>
+
+    {#if mode === 'importare'}
+      <ComposeFooterActions
+        {mode}
+        {loading}
+        {replyLoading}
+        messagesCount={messages.length}
+        {sessionId}
+        {onClose}
+        {submitCompose}
+      />
+    {/if}
   </div>
 {/if}
 
@@ -546,352 +658,391 @@
 
   .drawer {
     position: absolute;
-    top: 64px;
-    bottom: 84px;
+    top: max(64px, calc(var(--safe-top) + 46px));
+    bottom: auto;
     left: 50%;
     transform: translateX(-50%);
     box-sizing: border-box;
-    width: min(456px, calc(100vw - 32px));
-    max-height: calc(100dvh - 148px);
+    width: min(880px, calc(100vw - 24px));
+    height: min(74dvh, 720px);
+    max-height: min(74dvh, 720px);
     overflow-y: auto;
     overflow-x: hidden;
-    background: rgba(10, 11, 14, 0.97);
-    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    background: rgba(11, 15, 21, 0.97);
+    border: 0.5px solid rgba(255, 255, 255, 0.08);
     border-radius: 14px;
-    padding: 20px;
+    padding: 0;
     z-index: 20;
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
-    font-family: 'Departure Mono', 'Courier New', monospace;
+    font-family: 'IBM Plex Sans', sans-serif;
     overscroll-behavior: contain;
     scrollbar-width: thin;
+    box-shadow: 0 22px 54px rgba(2, 7, 14, 0.55);
   }
 
   .drawer-compose {
-    top: max(64px, calc(var(--safe-top) + 46px));
-    bottom: auto;
-    width: min(520px, calc(100vw - 24px));
-    height: min(66dvh, 560px);
-    max-height: min(66dvh, 560px);
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    padding: 14px;
+    gap: 0;
+    overflow-y: hidden;
     overflow-x: hidden;
   }
 
-  .drawer-compose.importare {
+  .drawer-compose:not(.importare) {
+    top: max(56px, calc(var(--safe-top) + 18px));
+    bottom: max(16px, calc(var(--safe-bottom) + 14px));
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: min(1280px, calc(100vw - 28px));
     height: auto;
-    max-height: min(620px, calc(100dvh - 160px));
+    max-height: none;
+    border-radius: 16px;
+    overflow: hidden;
   }
 
-  .compose-thread {
-    min-height: 148px;
-    max-height: none;
-    flex: 1 1 auto;
+  .drawer-compose.importare {
+    --compose-paste-height: 224px;
+    width: min(520px, calc(100vw - 24px));
+    height: auto;
+    max-height: min(620px, calc(100dvh - 160px));
+    padding: 14px;
+    gap: 6px;
     overflow-y: auto;
-    border: 0.5px solid rgba(255, 255, 255, 0.06);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.018);
-    padding: 8px;
-    margin-bottom: 4px;
+  }
+
+  .compose-live-shell {
+    position: relative;
+    min-height: 0;
+    height: 100%;
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    border-radius: 14px;
+    background:
+      radial-gradient(ellipse at 50% 56%, rgba(12, 29, 43, 0.34) 0%, rgba(9, 14, 23, 0.95) 68%),
+      #0b0f15;
+    isolation: isolate;
+  }
+
+  .compose-live-shell::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 52%, rgba(100, 190, 170, 0.08) 0%, rgba(100, 190, 170, 0) 58%),
+      radial-gradient(ellipse at 50% 96%, rgba(100, 160, 220, 0.06) 0%, rgba(100, 160, 220, 0) 64%);
+    opacity: 0.54;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .compose-live-shell::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, rgba(7, 11, 18, 0.32) 0%, rgba(7, 11, 18, 0) 20%, rgba(7, 11, 18, 0) 80%, rgba(7, 11, 18, 0.32) 100%),
+      linear-gradient(180deg, rgba(7, 11, 18, 0.24) 0%, rgba(7, 11, 18, 0) 24%, rgba(7, 11, 18, 0) 72%, rgba(7, 11, 18, 0.36) 100%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .compose-live-stars {
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 16% 18%, rgba(100, 190, 170, 0.1) 0, rgba(100, 190, 170, 0) 32%),
+      radial-gradient(circle at 80% 12%, rgba(100, 190, 170, 0.08) 0, rgba(100, 190, 170, 0) 26%),
+      radial-gradient(circle at 88% 76%, rgba(100, 190, 170, 0.08) 0, rgba(100, 190, 170, 0) 34%),
+      radial-gradient(circle at 12% 74%, rgba(100, 190, 170, 0.07) 0, rgba(100, 190, 170, 0) 28%);
+    opacity: 0.42;
+    animation: composeStarFieldFloat 28s ease-in-out infinite alternate;
+    z-index: 0;
+  }
+
+  @keyframes composeStarFieldFloat {
+    from {
+      transform: scale(1) translateY(0);
+      opacity: 0.38;
+    }
+    to {
+      transform: scale(1.01) translateY(-2px);
+      opacity: 0.46;
+    }
+  }
+
+  .compose-session-rail {
+    width: 0;
+    padding: 0;
+    overflow: hidden;
+    transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1), padding 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+    border-right: 0.5px solid rgba(255, 255, 255, 0.05);
+    background: rgba(10, 15, 22, 0.86);
+    z-index: 2;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
   }
 
-  .compose-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-bottom: 2px;
+  .compose-session-rail.open {
+    width: 170px;
+    padding: 16px 10px;
   }
 
-  .compose-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    border-radius: 999px;
-    border: 0.5px solid rgba(149, 188, 224, 0.26);
-    background: rgba(78, 119, 151, 0.1);
-    padding: 2px;
-  }
-
-  .compose-tab.active {
-    border-color: rgba(204, 231, 255, 0.58);
-    background: rgba(114, 168, 210, 0.24);
-  }
-
-  .compose-tab-btn,
-  .compose-tab-close,
-  .compose-tab-add {
-    border: none;
-    background: transparent;
-    color: rgba(204, 228, 248, 0.86);
-    font-family: 'Departure Mono', monospace;
-    font-size: 8px;
-    letter-spacing: 0.05em;
-    text-transform: lowercase;
-    cursor: pointer;
-  }
-
-  .compose-tab-btn {
-    padding: 3px 6px;
-  }
-
-  .compose-tab-close {
-    padding: 2px 4px;
-    color: rgba(218, 191, 191, 0.84);
-  }
-
-  .compose-tab-add {
-    border-radius: 999px;
-    border: 0.5px dashed rgba(170, 204, 236, 0.3);
-    background: rgba(97, 132, 161, 0.08);
-    padding: 3px 7px;
-  }
-
-  .compose-context-panel {
-    margin-bottom: 2px;
-    padding: 7px 8px;
-    border-radius: 10px;
-    border: 0.5px solid rgba(151, 193, 232, 0.24);
-    background: rgba(91, 128, 166, 0.06);
-    display: grid;
-    gap: 6px;
-  }
-
-  .compose-context-popover {
-    margin-top: 2px;
-    margin-bottom: 2px;
-    border-color: rgba(172, 207, 237, 0.28);
-    box-shadow: inset 0 0 0 1px rgba(118, 158, 192, 0.16);
-    animation: composeContextPopupIn 0.18s ease;
-  }
-
-  .compose-context-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 0;
-    font-size: 8px;
-    letter-spacing: 0.08em;
+  .compose-rail-label {
+    margin: 0 0 4px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    color: rgba(255, 255, 255, 0.2);
     text-transform: uppercase;
-    color: rgba(192, 220, 245, 0.78);
   }
 
-  .compose-context-head small {
-    font-size: 8px;
-    color: rgba(205, 223, 242, 0.66);
-  }
-
-  .compose-context-sessions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-bottom: 0;
-  }
-
-  .compose-context-session {
-    border: 0.5px solid rgba(143, 184, 220, 0.24);
-    background: rgba(66, 101, 130, 0.12);
-    color: rgba(192, 220, 242, 0.82);
-    border-radius: 999px;
-    font-family: 'Departure Mono', monospace;
-    font-size: 8px;
-    letter-spacing: 0.05em;
-    text-transform: lowercase;
-    padding: 4px 8px;
-    cursor: pointer;
-    max-width: 170px;
+  .compose-session-chip {
+    border: 0.5px solid rgba(100, 180, 165, 0.16);
+    background: rgba(100, 180, 165, 0.05);
+    color: rgba(180, 210, 200, 0.62);
+    border-radius: 20px;
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    text-align: left;
+    padding: 4px 10px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
   }
 
-  .compose-context-session.origin {
-    border-color: rgba(205, 176, 116, 0.44);
-    background: rgba(169, 132, 74, 0.18);
-    color: rgba(242, 223, 186, 0.96);
+  .compose-session-chip:hover {
+    color: rgba(100, 190, 170, 0.9);
+    border-color: rgba(100, 190, 170, 0.32);
+    background: rgba(100, 190, 170, 0.1);
   }
 
-  .compose-context-session.selected {
-    border-color: rgba(204, 231, 255, 0.58);
-    background: rgba(114, 168, 210, 0.24);
-    color: rgba(232, 244, 255, 0.96);
+  .compose-session-chip.active {
+    color: rgba(100, 190, 170, 0.96);
+    border-color: rgba(100, 190, 170, 0.36);
+    background: rgba(100, 190, 170, 0.12);
   }
 
-  .compose-context-session.origin.selected {
-    border-color: rgba(230, 211, 158, 0.72);
-    background: linear-gradient(135deg, rgba(192, 151, 88, 0.34), rgba(106, 78, 40, 0.3));
-    color: rgba(253, 242, 220, 0.98);
+  .compose-session-chip.origin {
+    border-color: rgba(194, 166, 102, 0.36);
   }
 
-  .compose-context-node-list {
-    max-height: 108px;
-    overflow-y: auto;
-    display: grid;
-    gap: 5px;
-  }
-
-  .compose-context-node {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
-    border: 0.5px solid rgba(156, 188, 214, 0.2);
-    border-radius: 7px;
-    padding: 6px;
-    background: rgba(45, 71, 95, 0.14);
-  }
-
-  .compose-context-node-body {
-    min-width: 0;
-    display: grid;
-    gap: 3px;
-  }
-
-  .compose-context-node-title,
-  .compose-context-node-meta,
-  .compose-context-node-preview {
+  .compose-session-empty {
     margin: 0;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.28);
+    font-style: italic;
+    text-transform: lowercase;
   }
 
-  .compose-context-node-title {
-    font-size: 8px;
-    color: rgba(229, 241, 252, 0.88);
+  .compose-chat-col {
+    position: relative;
+    z-index: 3;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
   }
 
-  .compose-context-node-meta {
-    font-size: 8px;
-    color: rgba(184, 208, 228, 0.7);
+  .compose-chat-col > * {
+    position: relative;
+    z-index: 1;
   }
 
-  .compose-context-node-preview {
-    font-size: 8px;
-    line-height: 1.35;
-    color: rgba(199, 220, 238, 0.78);
-    word-break: break-word;
+  .compose-chat-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px 10px;
+    border-bottom: 0.5px solid rgba(255, 255, 255, 0.04);
+    background: linear-gradient(180deg, rgba(10, 16, 25, 0.34), rgba(10, 16, 25, 0.06));
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
   }
 
-  .compose-context-inject {
-    border: 0.5px solid rgba(178, 213, 240, 0.3);
-    background: rgba(100, 147, 187, 0.2);
-    color: rgba(232, 244, 255, 0.92);
+  .compose-rail-toggle {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    background: transparent;
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 0 5px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.2s ease, background 0.2s ease;
+  }
+
+  .compose-rail-toggle:hover {
+    border-color: rgba(100, 190, 170, 0.34);
+    background: rgba(100, 190, 170, 0.08);
+  }
+
+  .compose-rail-toggle span {
+    display: block;
+    height: 1px;
+    border-radius: 1px;
+    background: rgba(150, 200, 190, 0.72);
+  }
+
+  .compose-rail-toggle span:nth-child(2) {
+    width: 72%;
+  }
+
+  .compose-rail-toggle span:nth-child(3) {
+    width: 86%;
+  }
+
+  .compose-close-btn {
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 14px;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .compose-close-btn:hover {
+    color: rgba(100, 190, 170, 0.86);
+  }
+
+  .compose-tools-toggle {
+    border: 0.5px solid rgba(122, 179, 208, 0.24);
     border-radius: 999px;
+    background: rgba(76, 123, 156, 0.14);
+    color: rgba(181, 214, 236, 0.72);
     font-family: 'Departure Mono', monospace;
-    font-size: 7px;
+    font-size: 8px;
     letter-spacing: 0.06em;
     text-transform: lowercase;
-    padding: 5px 7px;
     cursor: pointer;
+    padding: 4px 8px;
     flex-shrink: 0;
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
   }
 
-  .compose-injected-strip {
+  .compose-tools-toggle:hover {
+    border-color: rgba(155, 207, 238, 0.42);
+    background: rgba(92, 145, 181, 0.22);
+    color: rgba(221, 240, 255, 0.92);
+  }
+
+  .compose-session-row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 0;
-  }
-
-  .compose-injected-chip {
-    border: 0.5px solid rgba(199, 180, 132, 0.36);
-    background: rgba(196, 166, 104, 0.14);
-    color: rgba(232, 220, 189, 0.9);
-    border-radius: 999px;
-    font-family: 'Departure Mono', monospace;
-    font-size: 7px;
-    letter-spacing: 0.05em;
-    text-transform: lowercase;
-    padding: 4px 7px;
-    cursor: pointer;
-  }
-
-  .compose-thread-note {
-    margin: 0;
-    font-size: 8px;
-    letter-spacing: 0.03em;
-    color: rgba(200, 225, 245, 0.72);
-  }
-
-  .compose-thread-error {
-    margin-top: 6px;
-  }
-
-  .compose-empty {
-    margin: auto 0;
-    text-align: center;
-    font-size: 10px;
-    line-height: 1.5;
-    color: rgba(255, 255, 255, 0.34);
-    letter-spacing: 0.03em;
-  }
-
-  .compose-bubble {
-    border: 0.5px solid rgba(255, 255, 255, 0.065);
-    border-radius: 9px;
-    padding: 5px 7px;
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .compose-bubble.user {
-    border-color: rgba(255, 255, 255, 0.18);
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .compose-bubble.assistant {
-    border-color: rgba(214, 184, 109, 0.26);
-    background: rgba(214, 184, 109, 0.08);
-  }
-
-  .compose-bubble-meta {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
-    margin-bottom: 5px;
+    padding: 8px 16px 0;
+    background: linear-gradient(180deg, rgba(10, 16, 25, 0.08), rgba(10, 16, 25, 0));
+  }
+
+  .compose-session-tag {
     font-size: 9px;
-    letter-spacing: 0.08em;
-    text-transform: lowercase;
-    color: rgba(255, 255, 255, 0.5);
-  }
-
-  .compose-bubble-meta small {
-    font-size: 8px;
-    letter-spacing: 0.05em;
-    color: rgba(255, 255, 255, 0.35);
-  }
-
-  .compose-bubble p {
-    margin: 0;
-    font-size: 10px;
-    line-height: 1.4;
-    color: rgba(255, 255, 255, 0.76);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .compose-pending {
-    animation: composePulse 1.4s ease-in-out infinite;
-  }
-
-  .compose-entry {
-    display: flex;
-    gap: 6px;
-    align-items: flex-end;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: rgba(255, 255, 255, 0.22);
     flex-shrink: 0;
   }
 
-  .compose-input {
-    margin-bottom: 0;
-    min-height: 64px;
+  .compose-session-input {
+    width: 100%;
+    min-width: 0;
+    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 7px;
+    color: rgba(206, 217, 228, 0.84);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    padding: 6px 10px;
+    outline: none;
+    transition: border-color 0.2s ease;
   }
 
-  .compose-send {
-    min-width: 88px;
-    margin-bottom: 1px;
+  .compose-session-input:focus {
+    border-color: rgba(100, 190, 170, 0.32);
+  }
+
+  .compose-session-input::placeholder {
+    color: rgba(255, 255, 255, 0.24);
+  }
+
+  .compose-input-zone {
+    border-top: 0.5px solid rgba(255, 255, 255, 0.05);
+    padding: 10px 14px 0;
+    position: relative;
+    z-index: 2;
+    flex-shrink: 0;
+    background: linear-gradient(180deg, rgba(8, 12, 20, 0.02) 0%, rgba(8, 12, 20, 0.3) 34%, rgba(8, 12, 20, 0.56) 100%);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+
+  .compose-session-nodes-popover-wrap {
+    position: absolute;
+    left: -74px;
+    width: min(520px, calc(100% + 44px));
+    z-index: 9;
+    pointer-events: none;
+  }
+
+  .compose-session-nodes-popover-wrap :global(.compose-session-nodes-popover) {
+    pointer-events: auto;
+  }
+
+  .compose-live-tools-wrap {
+    margin: 7px 10px 10px;
+    padding: 9px;
+    border-radius: 10px;
+    border: 0.5px solid rgba(138, 176, 208, 0.28);
+    background: linear-gradient(170deg, rgba(28, 43, 61, 0.5), rgba(20, 31, 45, 0.44));
+    box-shadow: inset 0 0 0 1px rgba(108, 143, 173, 0.14);
+    display: grid;
+    gap: 8px;
+    position: relative;
+    z-index: 4;
+  }
+
+  .compose-live-tools-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 2px;
+  }
+
+  .compose-live-encode-btn {
+    border-radius: 999px;
+    border: 0.5px solid rgba(104, 194, 174, 0.3);
+    background: rgba(100, 190, 170, 0.14);
+    color: rgba(190, 236, 226, 0.86);
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: lowercase;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+  }
+
+  .compose-live-encode-btn:hover:not(:disabled) {
+    border-color: rgba(130, 214, 195, 0.52);
+    background: rgba(109, 203, 182, 0.24);
+    color: rgba(227, 248, 242, 0.94);
+  }
+
+  .compose-live-encode-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .compose-importare-note {
@@ -903,509 +1054,91 @@
     text-transform: lowercase;
   }
 
-  .compose-utility-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 3px;
-    margin-bottom: 2px;
-  }
-
-  .compose-utility-divider {
-    color: rgba(255, 255, 255, 0.18);
-    font-size: 9px;
-    line-height: 1;
-    user-select: none;
-  }
-
-  .compose-link-btn {
-    border: 0.5px solid rgba(126, 173, 198, 0.24);
-    background: rgba(80, 119, 143, 0.09);
-    padding: 4px 9px;
-    margin: 0;
-    font-family: 'Departure Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.06em;
-    text-transform: lowercase;
-    border-radius: 999px;
-    color: rgba(191, 223, 242, 0.72);
-    cursor: pointer;
-    transition: color 0.2s, border-color 0.2s, background 0.2s, opacity 0.2s;
-  }
-
-  .compose-link-btn:hover:not(:disabled) {
-    color: rgba(224, 240, 249, 0.88);
-    border-color: rgba(141, 192, 223, 0.4);
-    background: rgba(89, 136, 166, 0.15);
-  }
-
-  .compose-link-pill-gold {
-    border-color: rgba(199, 182, 132, 0.34);
-    background: rgba(196, 166, 104, 0.1);
-    color: rgba(229, 214, 182, 0.82);
-  }
-
-  .compose-link-pill-gold:hover:not(:disabled) {
-    color: rgba(247, 235, 210, 0.92);
-    border-color: rgba(215, 191, 136, 0.45);
-    background: rgba(196, 166, 104, 0.16);
-  }
-
-  .compose-link-pill-live {
-    border-color: rgba(153, 193, 121, 0.3);
-    background: rgba(118, 163, 85, 0.1);
-    color: rgba(212, 233, 189, 0.82);
-  }
-
-  .compose-link-pill-live:hover:not(:disabled) {
-    border-color: rgba(180, 219, 148, 0.43);
-    background: rgba(133, 178, 98, 0.17);
-    color: rgba(230, 244, 214, 0.9);
-  }
-
-  .compose-link-pill-context {
-    border-color: rgba(143, 184, 220, 0.3);
-    background: rgba(75, 112, 146, 0.14);
-    color: rgba(210, 231, 247, 0.82);
-  }
-
-  .compose-link-pill-context.active {
-    border-color: rgba(184, 217, 245, 0.52);
-    background: rgba(101, 151, 194, 0.24);
-    color: rgba(234, 245, 255, 0.95);
-  }
-
-  .compose-link-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-
-  .compose-paste-panel {
-    margin-top: 7px;
-    padding: 10px;
-    border-radius: 10px;
-    border: 0.5px dashed rgba(255, 255, 255, 0.11);
-    background: rgba(255, 255, 255, 0.012);
-  }
-
-  .compose-paste-intro {
-    margin: 0 0 8px;
-    font-size: 9px;
-    line-height: 1.45;
-    letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.48);
-    text-transform: lowercase;
-  }
-
-  .compose-paste-input {
-    min-height: var(--compose-paste-height);
-    height: var(--compose-paste-height);
-    margin-bottom: 0;
-    resize: none;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    overflow-x: hidden;
-  }
-
-  .compose-paste-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 7px;
-  }
-
-  .compose-paste-mode-note {
-    font-size: 9px;
-    letter-spacing: 0.05em;
-    text-transform: lowercase;
-    color: rgba(168, 188, 230, 0.74);
-  }
-
-  .compose-paste-editor {
-    position: relative;
-    min-height: var(--compose-paste-height);
-    height: var(--compose-paste-height);
-    margin-bottom: 0;
-    min-width: 0;
-  }
-
-  .compose-paste-editor.pretty {
-    border: 0.5px solid rgba(170, 193, 240, 0.24);
-    border-radius: 6px;
-    box-shadow: inset 0 0 0 1px rgba(112, 142, 204, 0.12);
-  }
-
-  .compose-paste-preview-wrap {
-    position: absolute;
-    inset: 0;
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(7, 8, 12, 0.9);
-    overflow: auto;
-    pointer-events: none;
-  }
-
-  .compose-paste-preview {
-    margin: 0;
-    padding: 8px 10px;
-    font-size: 11px;
-    line-height: 1.45;
-    color: rgba(233, 235, 242, 0.88);
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    min-height: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
-  }
-
-  .compose-paste-preview :global(span) {
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    max-width: 100%;
-  }
-
-  .compose-paste-preview :global(.sttp-empty) {
-    color: rgba(255, 255, 255, 0.38);
-    font-style: italic;
-  }
-
-  .compose-paste-preview :global(.sttp-marker) {
-    color: #f7c97b;
-  }
-
-  .compose-paste-preview :global(.sttp-brace) {
-    color: rgba(214, 221, 255, 0.82);
-  }
-
-  .compose-paste-preview :global(.sttp-key) {
-    color: #7cc6ff;
-  }
-
-  .compose-paste-preview :global(.sttp-confidence) {
-    color: #ffd68f;
-  }
-
-  .compose-paste-preview :global(.sttp-number) {
-    color: #8be6a8;
-  }
-
-  .compose-paste-preview :global(.sttp-keyword) {
-    color: #efc995;
-  }
-
-  .drawer-compose.importare .compose-paste-input {
-    min-height: 224px;
-    height: 224px;
-  }
-
-  .drawer-compose.importare .compose-paste-editor {
-    min-height: 224px;
-    height: 224px;
-  }
-
-  .compose-paste-input-highlighted {
-    position: relative;
-    z-index: 1;
-    background: transparent;
-    border-color: rgba(255, 255, 255, 0.14);
-    color: transparent;
-    -webkit-text-fill-color: transparent;
-    caret-color: rgba(244, 247, 255, 0.92);
-    overflow-x: hidden;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-  }
-
-  .compose-paste-input-highlighted::selection {
-    background: rgba(143, 183, 255, 0.28);
-  }
-
-  .compose-paste-input-highlighted::placeholder {
-    color: transparent;
-  }
-
-  .compose-paste-editor.pretty .compose-paste-preview-wrap {
-    position: relative;
-    border: none;
-    border-radius: 6px;
-  }
-
-  .compose-paste-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .compose-actions {
-    justify-content: flex-end;
-    align-items: center;
-  }
-
   .compose-encode-note {
-    margin-top: 8px;
+    margin: 8px 14px 0;
     opacity: 0.85;
     letter-spacing: 0.04em;
     text-transform: lowercase;
   }
 
-  @keyframes composePulse {
-    0%,
-    100% {
-      opacity: 0.64;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  @keyframes composeContextPopupIn {
-    from {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .drawer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
-
-  .drawer-title {
-    font-family: 'Fraunces', Georgia, serif;
-    font-weight: 300;
-    font-style: italic;
-    font-size: 15px;
-    color: rgba(255, 255, 255, 0.55);
-  }
-
-  .close-btn {
-    background: transparent;
-    border: none;
-    color: rgba(255, 255, 255, 0.3);
-    font-size: 14px;
-    cursor: pointer;
-    padding: 0;
-    transition: color 0.2s;
-  }
-
-  .close-btn:hover {
-    color: rgba(255, 255, 255, 0.7);
-  }
-
-  .drawer-input {
-    width: 100%;
-    box-sizing: border-box;
-    background: rgba(255, 255, 255, 0.04);
-    border: 0.5px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 8px 10px;
-    color: rgba(255, 255, 255, 0.7);
-    font-family: 'Departure Mono', monospace;
-    font-size: 11px;
-    margin-bottom: 8px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
-  .drawer-session-input {
-    margin-bottom: 6px;
-    font-family: 'IBM Plex Sans', sans-serif;
-    font-weight: 500;
-    letter-spacing: 0.01em;
-    border-radius: 5px;
-    padding: 7px 9px;
-  }
-
-  .drawer-session-input::placeholder {
-    color: rgba(216, 231, 246, 0.48);
-  }
-
-  .drawer-input:focus {
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-
-  .drawer-textarea {
-    width: 100%;
-    box-sizing: border-box;
-    background: rgba(255, 255, 255, 0.04);
-    border: 0.5px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 8px 10px;
-    color: rgba(255, 255, 255, 0.7);
-    font-family: 'Departure Mono', monospace;
-    font-size: 11px;
-    resize: vertical;
-    margin-bottom: 10px;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
-  .drawer-textarea:focus {
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-
-  .drawer-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .drawer-btn {
-    font-family: 'Departure Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    padding: 6px 14px;
-    border-radius: 999px;
-    cursor: pointer;
-    transition: color 0.2s, border-color 0.2s, background 0.2s, opacity 0.2s;
-  }
-
-  .drawer-btn.cancel {
-    background: transparent;
-    border: 0.5px solid rgba(255, 255, 255, 0.1);
-    color: rgba(255, 255, 255, 0.3);
-  }
-
-  .drawer-btn.cancel:hover:not(:disabled) {
-    border-color: rgba(255, 255, 255, 0.22);
-    color: rgba(255, 255, 255, 0.62);
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .drawer-btn.submit {
-    background: rgba(255, 255, 255, 0.06);
-    border: 0.5px solid rgba(255, 255, 255, 0.2);
-    color: rgba(255, 255, 255, 0.8);
-  }
-
-  .drawer-btn.submit:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.35);
-  }
-
-  .drawer-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
   .drawer-error {
     font-size: 10px;
     color: rgba(233, 148, 58, 0.88);
-    margin: 6px 0 0;
+    margin: 6px 14px 0;
   }
 
   .drawer-success {
     font-size: 10px;
     color: rgba(122, 170, 122, 0.9);
-    margin: 6px 0 0;
-  }
-
-  @media (hover: none) and (pointer: coarse) {
-    .drawer-compose .drawer-input,
-    .drawer-compose .drawer-textarea {
-      font-size: 16px;
-      line-height: 1.35;
-    }
+    margin: 6px 14px 0;
   }
 
   @media (max-width: 520px) {
     .drawer {
       top: calc(var(--safe-top) + 56px);
-      bottom: max(74px, calc(var(--safe-bottom) + 58px));
       width: calc(100vw - 20px);
-      max-height: calc(100dvh - 130px);
-      padding: 16px;
-    }
-
-    .drawer-compose {
-      top: calc(var(--safe-top) + 56px);
-      bottom: auto;
-      width: calc(100vw - 24px);
-      height: min(68svh, 512px);
-      max-height: min(68svh, 512px);
-      padding: 10px;
+      height: min(78svh, 640px);
+      max-height: min(78svh, 640px);
       border-color: rgba(214, 233, 251, 0.2);
       background: rgba(8, 12, 18, 0.985);
       box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
     }
 
-    .drawer-header {
-      margin-bottom: 7px;
-    }
-
-    .drawer-title {
-      font-size: 14px;
-    }
-
-    .drawer-session-input {
-      margin-bottom: 5px;
-      padding: 6px 8px;
-    }
-
-    .compose-thread {
-      max-height: none;
-      min-height: 152px;
-      padding: 7px;
-    }
-
-    .compose-entry {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 6px;
-    }
-
-    .compose-send {
-      width: 100%;
-      min-width: 0;
-    }
-
-    .compose-input {
-      min-height: 60px;
-    }
-
-    .compose-utility-actions {
-      align-items: center;
-      gap: 4px;
-      margin-top: 2px;
-      margin-bottom: 1px;
-      row-gap: 4px;
-    }
-
-    .compose-link-btn {
+    .drawer-compose:not(.importare) {
+      top: calc(var(--safe-top) + 10px);
+      right: 10px;
+      bottom: max(10px, calc(var(--safe-bottom) + 10px));
+      left: 10px;
       width: auto;
-      text-align: center;
+      height: auto;
+      max-height: none;
+      border-radius: 14px;
+    }
+
+    .drawer-compose.importare {
+      width: calc(100vw - 20px);
+      height: auto;
+      max-height: min(76svh, 620px);
+      padding: 10px;
+    }
+
+    .compose-session-rail.open {
+      width: 144px;
+      padding: 12px 8px;
+    }
+
+    .compose-chat-header {
+      padding: 12px 12px 9px;
+    }
+
+    .compose-session-row {
+      padding: 8px 12px 0;
+    }
+
+    .compose-tools-toggle {
       padding: 4px 7px;
       font-size: 8px;
-      letter-spacing: 0.04em;
     }
 
-    .compose-paste-actions {
-      flex-direction: row;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 6px;
+    .compose-input-zone {
+      padding: 10px 10px 0;
     }
 
-    .compose-paste-actions .drawer-btn {
-      width: auto;
-      text-align: center;
-      padding: 5px 10px;
+    .compose-session-nodes-popover-wrap {
+      left: -14px;
+      width: calc(100% + 2px);
     }
 
-    .compose-utility-divider {
-      display: none;
+    .compose-live-tools-wrap {
+      margin: 6px 8px 9px;
+      padding: 8px;
+    }
+
+    .drawer-error,
+    .drawer-success,
+    .compose-encode-note {
+      margin-left: 10px;
+      margin-right: 10px;
     }
   }
 </style>

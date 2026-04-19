@@ -91,6 +91,19 @@ export interface ComposeChatRequest {
   messages: ChatMessage[];
 }
 
+export interface ComposeUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+export interface ComposeChatResponse {
+  content: string | null;
+  provider?: string;
+  model?: string;
+  usage?: ComposeUsage | null;
+}
+
 export interface EncodeComposeRequest {
   sessionId: string;
   messages: ChatMessage[];
@@ -128,7 +141,7 @@ export interface ResonantiaClient {
   syncPull(request: SyncPullRequest): Promise<SyncPullCommandResponse>;
   syncNow(request?: SyncNowRequest): Promise<SyncNowResponse>;
   calibrateSession(input: CalibrateSessionInput): Promise<CalibrateSessionResponse>;
-  chatCompose(request: ComposeChatRequest): Promise<string | null>;
+  chatCompose(request: ComposeChatRequest): Promise<ComposeChatResponse>;
   encodeCompose(request: EncodeComposeRequest): Promise<string>;
   summarizeNode(rawNode: string): Promise<AiSummary | null>;
   getOpenAiByoKeyStatus(): Promise<OpenAiByoKeyStatus>;
@@ -139,6 +152,59 @@ export interface ResonantiaClient {
   setOllamaConfig(baseUrl?: string, model?: string): Promise<void>;
   setGatewayBaseUrl(baseUrl: string): Promise<void>;
   setGatewayAuthToken(token: string): Promise<void>;
+}
+
+function toObjectRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeComposeChatResponse(value: unknown): ComposeChatResponse {
+  if (typeof value === "string") {
+    return {
+      content: value,
+    };
+  }
+
+  if (value === null || value === undefined) {
+    return {
+      content: null,
+    };
+  }
+
+  const record = toObjectRecord(value);
+  const usageRecord = toObjectRecord(record.usage);
+  const usage = {
+    promptTokens: toOptionalNumber(usageRecord.promptTokens ?? usageRecord.prompt_tokens),
+    completionTokens: toOptionalNumber(usageRecord.completionTokens ?? usageRecord.completion_tokens),
+    totalTokens: toOptionalNumber(usageRecord.totalTokens ?? usageRecord.total_tokens),
+  };
+  const hasUsage = usage.promptTokens !== undefined
+    || usage.completionTokens !== undefined
+    || usage.totalTokens !== undefined;
+
+  return {
+    content: typeof record.content === "string" ? record.content : null,
+    provider: typeof record.provider === "string" ? record.provider : undefined,
+    model: typeof record.model === "string" ? record.model : undefined,
+    usage: hasUsage ? usage : null,
+  };
 }
 
 export function createResonantiaClient(invokeCommand: CommandInvoker): ResonantiaClient {
@@ -190,10 +256,13 @@ export function createResonantiaClient(invokeCommand: CommandInvoker): Resonanti
           trigger: input.trigger,
         },
       }),
-    chatCompose: (request) =>
-      invokeCommand<string | null>("chat_compose", {
+    chatCompose: async (request) => {
+      const response = await invokeCommand<unknown>("chat_compose", {
         request,
-      }),
+      });
+
+      return normalizeComposeChatResponse(response);
+    },
     encodeCompose: (request) =>
       invokeCommand<string>("encode_compose", {
         request,

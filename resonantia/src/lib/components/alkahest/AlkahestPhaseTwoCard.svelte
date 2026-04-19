@@ -1,10 +1,11 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
 
-  type AlkahestMode = 'export' | 'distill' | 'both';
+  type AlkahestMode = 'export' | 'distill' | 'both' | 'import';
 
   export let mode: AlkahestMode = 'both';
   export let targetSessionId = '';
+  export let importNodeDraft = '';
   export let loading = false;
   export let scopeScanning = false;
   export let phase2Complete = false;
@@ -31,10 +32,11 @@
 
   <label class="field">
     <span>operation</span>
-    <select class="input" bind:value={mode} disabled={loading || scopeScanning} on:change={notifyChange}>
+    <select class="input" data-tour-target="alkahest-import" bind:value={mode} disabled={loading || scopeScanning} on:change={notifyChange}>
       <option value="export">liquefy only (export json)</option>
       <option value="distill">distill only (super node)</option>
       <option value="both">liquefy + distill</option>
+      <option value="import">import one raw STTP node</option>
     </select>
   </label>
 
@@ -42,18 +44,36 @@
 
   {#if mode !== 'export'}
     <label class="field">
-      <span>target session for super node</span>
+      <span>{mode === 'import' ? 'target session for imported node' : 'target session for super node'}</span>
       <input
         class="input"
         type="text"
-        placeholder="alkahest-monthly"
+        placeholder={mode === 'import' ? 'import-session-id' : 'alkahest-monthly'}
         bind:value={targetSessionId}
         disabled={loading || scopeScanning}
         on:input={notifyChange}
       />
     </label>
 
-    <p class="internal-note">distillation prompt is managed by the lab attunement layer.</p>
+    {#if mode === 'import'}
+      <label class="field">
+        <span>raw STTP node payload</span>
+        <textarea
+          class="input textarea"
+          placeholder="paste one complete STTP node"
+          bind:value={importNodeDraft}
+          rows="7"
+          disabled={loading || scopeScanning}
+          on:input={notifyChange}
+        ></textarea>
+      </label>
+
+      <p class="mode-copy">{importNodeDraft.trim() ? `${importNodeDraft.trim().length} characters staged for import.` : 'Paste one complete node to enable import.'}</p>
+    {/if}
+
+    {#if mode !== 'import'}
+      <p class="internal-note">distillation prompt is managed by the lab attunement layer.</p>
+    {/if}
   {/if}
 
   <div class="actions">
@@ -145,6 +165,15 @@
   .input:focus {
     border-color: rgba(var(--accent-rgb), 0.66);
     box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.18);
+  }
+
+  .textarea {
+    resize: vertical;
+    min-height: 130px;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 11px;
+    line-height: 1.45;
+    letter-spacing: 0.01em;
   }
 
   .mode-copy {
