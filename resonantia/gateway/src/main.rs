@@ -2,23 +2,14 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use axum::extract::{Query, Request, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use opentelemetry::global;
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::KeyValue;
-use opentelemetry_http::HeaderExtractor;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::runtime::Tokio;
-use opentelemetry_sdk::{trace as sdktrace, Resource};
-use sha2::{Digest, Sha256};
 use resonantia_core::{
     get_health, get_graph,
     list_nodes, rename_session, store_context,
@@ -27,21 +18,18 @@ use resonantia_core::{
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info, warn, Instrument};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
+use tracing::{error, info, warn};
 
 mod accounts;
 mod auth;
+mod observability;
 mod stripe;
 mod tenant_context;
 mod tenant_pool;
 
 use accounts::{AccountResponse, AccountStore, AccountsRepo};
 use auth::{resolve_user_context, AuthResolver};
+use observability::{init_tracing, observability_middleware, read_observability_config, ObservabilityConfig};
 use stripe::{checkout_handler, customer_portal_handler, looks_like_stripe_price_id, stripe_webhook_handler, StripeConfig};
 use tenant_context::{resolve_sync_tenant_state, resolve_tenant_state};
 use tenant_pool::{start_tenant_cache_cleanup, SurrealConfig, TenantPool};
@@ -57,11 +45,6 @@ struct GatewayContext {
     stripe: Option<Arc<StripeConfig>>,
     ai: Option<Arc<AiConfig>>,
     observability: Arc<ObservabilityConfig>,
-}
-
-#[derive(Clone)]
-struct ObservabilityConfig {
-    request_log_sample_rate: f64,
 }
 
 #[derive(Clone)]
@@ -228,10 +211,16 @@ async fn main() {
                     .map(|value| value.trim().trim_end_matches('/').to_string())
                     .filter(|value| !value.is_empty())
                     .unwrap_or_else(|| "https://api.stripe.com".to_string());
-                info!("stripe integration enabled");
+                let webhook_tolerance_seconds = env::var("RESONANTIA_STRIPE_WEBHOOK_TOLERANCE_SECONDS")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<i64>().ok())
+                    .map(|value| value.max(1))
+                    .unwrap_or(300);
+                info!(webhook_tolerance_seconds, "stripe integration enabled");
                 Some(Arc::new(StripeConfig {
                     secret_key,
                     webhook_secret,
+                    webhook_tolerance_seconds,
                     price_id_resonant,
                     price_id_soulful,
                     success_url,
@@ -354,9 +343,11 @@ async fn update_tier_handler(
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::not_found("account not found".to_string()))?;
 
+    let effective_tier = record.effective_tier();
+
     Ok(Json(AccountResponse {
         user_id: record.user_id,
-        tier: record.tier,
+        tier: effective_tier,
         member_since: record.created_at,
     }))
 }
@@ -377,9 +368,11 @@ async fn account_handler(
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::internal("account record not found after provisioning".to_string()))?;
 
+    let effective_tier = record.effective_tier();
+
     Ok(Json(AccountResponse {
         user_id: record.user_id,
-        tier: record.tier,
+        tier: effective_tier,
         member_since: record.created_at,
     }))
 }
@@ -521,15 +514,17 @@ async fn enforce_ai_entitlement(
         .map_err(AppError::internal)?
         .ok_or_else(|| AppError::unauthorized("account record missing for authenticated user".to_string()))?;
 
+    let effective_tier = account.effective_tier();
+
     let allowed = if purpose == "transmutation" {
-        has_soulful_tier(&account.tier) || client == "tauri"
+        has_soulful_tier(&effective_tier) || client == "tauri"
     } else if context
         .ai
         .as_ref()
         .map(|ai| ai.require_soulful_for_chat)
         .unwrap_or(true)
     {
-        has_soulful_tier(&account.tier)
+        has_soulful_tier(&effective_tier)
     } else {
         true
     };
@@ -613,146 +608,6 @@ async fn ai_chat_handler(
     }))
 }
 
-struct TelemetryRuntime {
-    otel_enabled: bool,
-}
-
-fn parse_sample_rate_env(name: &str, default: f64) -> f64 {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .map(|value| value.clamp(0.0, 1.0))
-        .unwrap_or(default)
-}
-
-fn read_observability_config() -> ObservabilityConfig {
-    let request_log_sample_rate = parse_sample_rate_env(
-        "RESONANTIA_GATEWAY_OBS_REQUEST_LOG_SAMPLE_RATE",
-        0.2,
-    );
-
-    info!(request_log_sample_rate, "gateway request observability configured");
-    ObservabilityConfig {
-        request_log_sample_rate,
-    }
-}
-
-fn extract_request_id(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("x-request-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-fn generate_request_id() -> String {
-    Uuid::new_v4().to_string()
-}
-
-fn should_sample(seed: &str, sample_rate: f64) -> bool {
-    if sample_rate <= 0.0 {
-        return false;
-    }
-    if sample_rate >= 1.0 {
-        return true;
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(seed.as_bytes());
-    let digest = hasher.finalize();
-
-    let mut slice = [0u8; 8];
-    slice.copy_from_slice(&digest[..8]);
-    let unit = (u64::from_be_bytes(slice) as f64) / (u64::MAX as f64);
-    unit < sample_rate
-}
-
-async fn observability_middleware(
-    State(context): State<GatewayContext>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let started = Instant::now();
-    let method = request.method().to_string();
-    let path = request.uri().path().to_string();
-    let client = client_kind(request.headers());
-    let request_id = extract_request_id(request.headers()).unwrap_or_else(generate_request_id);
-
-    let traceparent = request
-        .headers()
-        .get("traceparent")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string());
-
-    let span = tracing::info_span!(
-        "http.request",
-        request_id = %request_id,
-        method = %method,
-        path = %path,
-        client = %client,
-        traceparent = tracing::field::Empty,
-    );
-
-    if let Some(traceparent_value) = traceparent.as_deref() {
-        span.record("traceparent", tracing::field::display(traceparent_value));
-    }
-
-    global::get_text_map_propagator(|propagator| {
-        let parent = propagator.extract(&HeaderExtractor(request.headers()));
-        span.set_parent(parent);
-    });
-
-    let mut response = next.run(request).instrument(span).await;
-    let status_code = response.status().as_u16();
-    let duration_ms = started.elapsed().as_millis() as u64;
-
-    if let Ok(value) = HeaderValue::from_str(&request_id) {
-        response.headers_mut().insert("x-request-id", value);
-    }
-
-    let should_log = status_code >= 500
-        || should_sample(&request_id, context.observability.request_log_sample_rate);
-
-    if should_log {
-        if status_code >= 500 {
-            error!(
-                request_id = %request_id,
-                method = %method,
-                path = %path,
-                client = %client,
-                status_code,
-                duration_ms,
-                "http request completed with server error"
-            );
-        } else if status_code >= 400 {
-            warn!(
-                request_id = %request_id,
-                method = %method,
-                path = %path,
-                client = %client,
-                status_code,
-                duration_ms,
-                "http request completed with client error"
-            );
-        } else {
-            info!(
-                request_id = %request_id,
-                method = %method,
-                path = %path,
-                client = %client,
-                status_code,
-                duration_ms,
-                "http request completed"
-            );
-        }
-    }
-
-    response
-}
-
 fn build_cors_layer() -> CorsLayer {
     let origins = allowed_origins();
     let mut layer = CorsLayer::new()
@@ -780,75 +635,6 @@ fn allowed_origins() -> Vec<String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect()
-}
-
-fn init_tracing() -> TelemetryRuntime {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("resonantia_gateway=info,tower_http=info"));
-
-    let otel_service_name = env::var("RESONANTIA_OTEL_SERVICE_NAME")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "resonantia-gateway".to_string());
-
-    let otlp_endpoint = env::var("RESONANTIA_OTEL_EXPORTER_OTLP_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    let otel_trace_sample_rate = parse_sample_rate_env("RESONANTIA_OTEL_TRACE_SAMPLE_RATE", 0.1);
-
-    global::set_text_map_propagator(TraceContextPropagator::new());
-
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .compact();
-
-    if let Some(endpoint) = otlp_endpoint {
-        let resource = Resource::new(vec![
-            KeyValue::new("service.name", otel_service_name.clone()),
-            KeyValue::new("service.namespace", "resonantia"),
-        ]);
-
-        let exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint.clone())
-            .build()
-            .expect("failed to build OTLP span exporter");
-
-        let tracer_provider = sdktrace::TracerProvider::builder()
-            .with_sampler(sdktrace::Sampler::TraceIdRatioBased(otel_trace_sample_rate))
-            .with_resource(resource)
-            .with_batch_exporter(exporter, Tokio)
-            .build();
-
-        let tracer = tracer_provider.tracer(otel_service_name.clone());
-        global::set_tracer_provider(tracer_provider);
-
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(fmt_layer)
-            .with(tracing_opentelemetry::layer().with_tracer(tracer))
-            .init();
-
-        info!(
-            %endpoint,
-            service = %otel_service_name,
-            otel_trace_sample_rate,
-            "opentelemetry exporter enabled"
-        );
-
-        return TelemetryRuntime { otel_enabled: true };
-    }
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt_layer)
-        .init();
-
-    info!("opentelemetry exporter disabled (set RESONANTIA_OTEL_EXPORTER_OTLP_ENDPOINT to enable)");
-    TelemetryRuntime { otel_enabled: false }
 }
 
 async fn shutdown_signal() {

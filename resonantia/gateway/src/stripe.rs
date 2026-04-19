@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{TimeZone, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -18,6 +19,7 @@ use crate::{
 pub struct StripeConfig {
     pub secret_key: String,
     pub webhook_secret: String,
+    pub webhook_tolerance_seconds: i64,
     pub price_id_resonant: String,
     pub price_id_soulful: String,
     pub success_url: String,
@@ -189,27 +191,48 @@ pub async fn customer_portal_handler(
     Ok(Json(CheckoutSessionResponse { url }))
 }
 
-fn verify_stripe_signature(body: &[u8], sig_header: &str, secret: &str) -> bool {
+fn parse_stripe_signature(sig_header: &str) -> Option<(i64, Vec<&str>)> {
     // Stripe-Signature: t=<timestamp>,v1=<hex_sig>[,v1=<hex_sig2>...]
-    let mut timestamp: Option<&str> = None;
+    let mut timestamp: Option<i64> = None;
     let mut signatures: Vec<&str> = Vec::new();
 
     for part in sig_header.split(',') {
         if let Some(t) = part.strip_prefix("t=") {
-            timestamp = Some(t);
+            timestamp = t.trim().parse::<i64>().ok();
         } else if let Some(sig) = part.strip_prefix("v1=") {
             signatures.push(sig);
         }
     }
 
-    let Some(t) = timestamp else {
+    match (timestamp, signatures.is_empty()) {
+        (Some(ts), false) => Some((ts, signatures)),
+        _ => None,
+    }
+}
+
+fn timestamp_within_tolerance(timestamp: i64, tolerance_seconds: i64) -> bool {
+    let tolerance_seconds = tolerance_seconds.max(1);
+    let now = Utc::now().timestamp();
+    let lower_bound = now.saturating_sub(tolerance_seconds);
+    let upper_bound = now.saturating_add(tolerance_seconds);
+    (lower_bound..=upper_bound).contains(&timestamp)
+}
+
+fn verify_stripe_signature(
+    body: &[u8],
+    sig_header: &str,
+    secret: &str,
+    tolerance_seconds: i64,
+) -> bool {
+    let Some((timestamp, signatures)) = parse_stripe_signature(sig_header) else {
         return false;
     };
-    if signatures.is_empty() {
+
+    if !timestamp_within_tolerance(timestamp, tolerance_seconds) {
         return false;
     }
 
-    let signed_payload = format!("{}.{}", t, String::from_utf8_lossy(body));
+    let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(body));
 
     let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
         return false;
@@ -233,6 +256,123 @@ pub fn looks_like_stripe_price_id(value: &str) -> bool {
     value.trim().starts_with("price_")
 }
 
+fn webhook_user_id_from_event(object: &serde_json::Value) -> Option<&str> {
+    object["metadata"]["clerk_user_id"]
+        .as_str()
+        .or_else(|| object["subscription_details"]["metadata"]["clerk_user_id"].as_str())
+        .or_else(|| object["client_reference_id"].as_str())
+        .or_else(|| object["lines"]["data"][0]["metadata"]["clerk_user_id"].as_str())
+        .or_else(|| {
+            object["lines"]["data"][0]["subscription_item_details"]["metadata"]["clerk_user_id"]
+                .as_str()
+        })
+        .or_else(|| object["parent"]["subscription_details"]["metadata"]["clerk_user_id"].as_str())
+}
+
+async fn resolve_webhook_user_id(
+    context: &GatewayContext,
+    object: &serde_json::Value,
+    customer_id: Option<&str>,
+) -> Option<String> {
+    if let Some(user_id) = webhook_user_id_from_event(object) {
+        return Some(user_id.to_string());
+    }
+
+    let customer_id = customer_id?;
+    match context
+        .accounts
+        .get_user_id_by_stripe_customer_id(customer_id)
+        .await
+    {
+        Ok(Some(user_id)) => {
+            info!(%customer_id, %user_id, "resolved stripe webhook user id from customer mapping");
+            Some(user_id)
+        }
+        Ok(None) => None,
+        Err(err) => {
+            error!(%customer_id, %err, "failed resolving stripe webhook user id by customer id");
+            None
+        }
+    }
+}
+
+fn unix_seconds_to_rfc3339(value: i64) -> Option<String> {
+    Utc.timestamp_opt(value, 0)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+}
+
+fn invoice_paid_at(object: &serde_json::Value) -> String {
+    object["status_transitions"]["paid_at"]
+        .as_i64()
+        .and_then(unix_seconds_to_rfc3339)
+        .or_else(|| object["created"].as_i64().and_then(unix_seconds_to_rfc3339))
+        .unwrap_or_else(|| Utc::now().to_rfc3339())
+}
+
+fn subscription_cancelled_at(object: &serde_json::Value) -> String {
+    object["canceled_at"]
+        .as_i64()
+        .and_then(unix_seconds_to_rfc3339)
+        .or_else(|| object["status_transitions"]["finalized_at"].as_i64().and_then(unix_seconds_to_rfc3339))
+        .unwrap_or_else(|| Utc::now().to_rfc3339())
+}
+
+async fn apply_paid_webhook_update(
+    context: &GatewayContext,
+    user_id: &str,
+    tier: &str,
+    paid_at: &str,
+) -> Result<(), String> {
+    match context
+        .accounts
+        .record_subscription_payment(user_id, tier, paid_at)
+        .await
+    {
+        Ok(Some(_)) => {
+            info!(%user_id, %tier, %paid_at, "account payment recorded via stripe webhook");
+            Ok(())
+        }
+        Ok(None) => {
+            context.accounts.provision(user_id).await?;
+            context
+                .accounts
+                .record_subscription_payment(user_id, tier, paid_at)
+                .await?;
+            info!(%user_id, %tier, %paid_at, "account provisioned and payment recorded via stripe webhook");
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn apply_cancellation_webhook_update(
+    context: &GatewayContext,
+    user_id: &str,
+    cancelled_at: &str,
+) -> Result<(), String> {
+    match context
+        .accounts
+        .mark_subscription_cancelled(user_id, cancelled_at)
+        .await
+    {
+        Ok(Some(_)) => {
+            info!(%user_id, %cancelled_at, "account cancellation recorded via stripe webhook");
+            Ok(())
+        }
+        Ok(None) => {
+            context.accounts.provision(user_id).await?;
+            context
+                .accounts
+                .mark_subscription_cancelled(user_id, cancelled_at)
+                .await?;
+            info!(%user_id, %cancelled_at, "account provisioned and cancellation recorded via stripe webhook");
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub async fn stripe_webhook_handler(
     State(context): State<GatewayContext>,
     headers: HeaderMap,
@@ -250,7 +390,29 @@ pub async fn stripe_webhook_handler(
         }
     };
 
-    if !verify_stripe_signature(&body, &sig_header, &stripe.webhook_secret) {
+    let Some((timestamp, _)) = parse_stripe_signature(&sig_header) else {
+        return (StatusCode::UNAUTHORIZED, "invalid stripe signature").into_response();
+    };
+
+    if !timestamp_within_tolerance(timestamp, stripe.webhook_tolerance_seconds) {
+        let now = Utc::now().timestamp();
+        let skew_seconds = now.saturating_sub(timestamp);
+        error!(
+            timestamp,
+            now,
+            skew_seconds,
+            webhook_tolerance_seconds = stripe.webhook_tolerance_seconds,
+            "stripe webhook signature timestamp outside tolerance; verify system clock synchronization",
+        );
+        return (StatusCode::UNAUTHORIZED, "invalid stripe signature").into_response();
+    }
+
+    if !verify_stripe_signature(
+        &body,
+        &sig_header,
+        &stripe.webhook_secret,
+        stripe.webhook_tolerance_seconds,
+    ) {
         return (StatusCode::UNAUTHORIZED, "invalid stripe signature").into_response();
     }
 
@@ -264,17 +426,13 @@ pub async fn stripe_webhook_handler(
 
     let object = &event["data"]["object"];
 
-    // Resolve user identity from event metadata. For checkout sessions, Stripe may only
-    // provide client_reference_id, so use it as a fallback.
-    let user_id = object["metadata"]["clerk_user_id"]
-        .as_str()
-        .or_else(|| object["subscription_details"]["metadata"]["clerk_user_id"].as_str())
-        .or_else(|| object["client_reference_id"].as_str());
+    let customer_id = object["customer"].as_str().filter(|value| !value.is_empty());
+    let user_id = resolve_webhook_user_id(&context, object, customer_id).await;
 
     // Persist Stripe customer mapping from webhook events as canonical source of truth.
     if let (Some(user_id), Some(customer_id)) = (
-        user_id,
-        object["customer"].as_str().filter(|value| !value.is_empty()),
+        user_id.as_deref(),
+        customer_id,
     ) {
         if let Err(err) = context
             .accounts
@@ -285,10 +443,16 @@ pub async fn stripe_webhook_handler(
         }
     }
 
-    let new_tier: Option<String> = match event_type {
+    enum WebhookAction {
+        Ignore,
+        RecordPayment { tier: String, paid_at: String },
+        RecordCancellation { cancelled_at: String },
+    }
+
+    let action = match event_type {
         // Do not grant privileges on checkout completion. Checkout can complete before
         // a durable paid invoice is finalized for subscription flows.
-        "checkout.session.completed" => None,
+        "checkout.session.completed" => WebhookAction::Ignore,
         "invoice.payment_succeeded" => {
             let paid = object["paid"].as_bool().unwrap_or(false);
             let amount_paid = object["amount_paid"].as_i64().unwrap_or(0);
@@ -297,39 +461,41 @@ pub async fn stripe_webhook_handler(
                     .as_str()
                     .or_else(|| object["metadata"]["tier"].as_str())
                     .unwrap_or("resonant");
-                Some(tier.to_string())
+                WebhookAction::RecordPayment {
+                    tier: tier.to_string(),
+                    paid_at: invoice_paid_at(object),
+                }
             } else {
                 info!(%paid, amount_paid, "ignoring invoice.payment_succeeded without captured payment");
-                None
+                WebhookAction::Ignore
             }
         }
-        "customer.subscription.deleted" | "invoice.payment_failed" => Some("free".to_string()),
-        _ => None,
+        "customer.subscription.deleted" | "invoice.payment_failed" => WebhookAction::RecordCancellation {
+            cancelled_at: subscription_cancelled_at(object),
+        },
+        _ => WebhookAction::Ignore,
     };
 
-    let Some(tier) = new_tier else {
-        return (StatusCode::OK, "event ignored").into_response();
+    let Some(user_id) = user_id.as_deref() else {
+        error!(%event_type, "stripe webhook user id resolution failed");
+        return (StatusCode::OK, "no user id resolved for event, skipped").into_response();
     };
 
-    let Some(user_id) = user_id else {
-        error!(%event_type, "stripe webhook missing clerk_user_id in metadata");
-        return (StatusCode::OK, "no clerk_user_id in metadata, skipped").into_response();
-    };
-
-    match context.accounts.update_tier(user_id, &tier).await {
-        Ok(Some(_)) => info!(%user_id, %tier, "account tier updated via stripe webhook"),
-        Ok(None) => {
-            // User hasn't signed in to the gateway yet — provision and set tier.
-            if let Err(err) = context.accounts.provision(user_id).await {
-                error!(%user_id, %err, "failed to provision account from stripe webhook");
-            } else if let Err(err) = context.accounts.update_tier(user_id, &tier).await {
-                error!(%user_id, %err, "failed to set tier after provisioning from stripe webhook");
-            }
+    let result = match action {
+        WebhookAction::Ignore => {
+            return (StatusCode::OK, "event ignored").into_response();
         }
-        Err(err) => {
-            error!(%user_id, %err, "failed to update tier from stripe webhook");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "tier update failed").into_response();
+        WebhookAction::RecordPayment { tier, paid_at } => {
+            apply_paid_webhook_update(&context, user_id, &tier, &paid_at).await
         }
+        WebhookAction::RecordCancellation { cancelled_at } => {
+            apply_cancellation_webhook_update(&context, user_id, &cancelled_at).await
+        }
+    };
+
+    if let Err(err) = result {
+        error!(%user_id, %err, "failed to apply stripe webhook account update");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "account update failed").into_response();
     }
 
     (StatusCode::OK, "ok").into_response()
@@ -346,6 +512,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::routing::post;
     use axum::{Json, Router};
+    use chrono::Utc;
     use hmac::{Hmac, Mac};
     use serde_json::{json, Value};
     use sha2::Sha256;
@@ -367,8 +534,13 @@ mod tests {
     struct MockAccountsState {
         stripe_customer_by_user: HashMap<String, String>,
         tier_by_user: HashMap<String, String>,
+        last_paid_at_by_user: HashMap<String, String>,
+        cancelled_at_by_user: HashMap<String, String>,
         set_customer_calls: Vec<(String, String)>,
+        get_user_by_customer_calls: Vec<String>,
         update_tier_calls: Vec<(String, String)>,
+        record_payment_calls: Vec<(String, String, String)>,
+        mark_cancelled_calls: Vec<(String, String)>,
         provision_calls: Vec<String>,
         get_customer_calls: Vec<String>,
     }
@@ -410,6 +582,23 @@ mod tests {
             Ok(state.stripe_customer_by_user.get(user_id).cloned())
         }
 
+        async fn get_user_id_by_stripe_customer_id(&self, customer_id: &str) -> Result<Option<String>, String> {
+            let mut state = self.state.lock().await;
+            state
+                .get_user_by_customer_calls
+                .push(customer_id.to_string());
+            Ok(state
+                .stripe_customer_by_user
+                .iter()
+                .find_map(|(user_id, cid)| {
+                    if cid == customer_id {
+                        Some(user_id.clone())
+                    } else {
+                        None
+                    }
+                }))
+        }
+
         async fn update_tier(&self, user_id: &str, tier: &str) -> Result<Option<AccountRecord>, String> {
             let mut state = self.state.lock().await;
             state.update_tier_calls.push((user_id.to_string(), tier.to_string()));
@@ -420,6 +609,63 @@ mod tests {
                 user_id: user_id.to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 tier: tier.to_string(),
+                last_paid_at: state.last_paid_at_by_user.get(user_id).cloned(),
+                subscription_cancelled_at: state.cancelled_at_by_user.get(user_id).cloned(),
+            }))
+        }
+
+        async fn record_subscription_payment(
+            &self,
+            user_id: &str,
+            tier: &str,
+            paid_at: &str,
+        ) -> Result<Option<AccountRecord>, String> {
+            let mut state = self.state.lock().await;
+            state
+                .record_payment_calls
+                .push((user_id.to_string(), tier.to_string(), paid_at.to_string()));
+            state
+                .tier_by_user
+                .insert(user_id.to_string(), tier.to_string());
+            state
+                .last_paid_at_by_user
+                .insert(user_id.to_string(), paid_at.to_string());
+            state.cancelled_at_by_user.remove(user_id);
+
+            Ok(Some(AccountRecord {
+                user_id: user_id.to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                tier: tier.to_string(),
+                last_paid_at: Some(paid_at.to_string()),
+                subscription_cancelled_at: None,
+            }))
+        }
+
+        async fn mark_subscription_cancelled(
+            &self,
+            user_id: &str,
+            cancelled_at: &str,
+        ) -> Result<Option<AccountRecord>, String> {
+            let mut state = self.state.lock().await;
+            state
+                .mark_cancelled_calls
+                .push((user_id.to_string(), cancelled_at.to_string()));
+            state
+                .cancelled_at_by_user
+                .insert(user_id.to_string(), cancelled_at.to_string());
+
+            let tier = state
+                .tier_by_user
+                .get(user_id)
+                .cloned()
+                .unwrap_or_else(|| "free".to_string());
+
+            Ok(Some(AccountRecord {
+                user_id: user_id.to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                tier,
+                last_paid_at: state.last_paid_at_by_user.get(user_id).cloned(),
+                subscription_cancelled_at: Some(cancelled_at.to_string()),
             }))
         }
 
@@ -439,6 +685,8 @@ mod tests {
                 user_id: user_id.to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 tier: tier.clone(),
+                last_paid_at: state.last_paid_at_by_user.get(user_id).cloned(),
+                subscription_cancelled_at: state.cancelled_at_by_user.get(user_id).cloned(),
             }))
         }
     }
@@ -469,6 +717,7 @@ mod tests {
         Arc::new(StripeConfig {
             secret_key: "sk_test_123".to_string(),
             webhook_secret: "whsec_test_123".to_string(),
+            webhook_tolerance_seconds: 300,
             price_id_resonant: "price_resonant_test".to_string(),
             price_id_soulful: "price_soulful_test".to_string(),
             success_url: "https://account.resonantia.me?payment=success".to_string(),
@@ -590,7 +839,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn webhook_route_updates_tier_and_persists_customer_for_paid_invoice() {
+    async fn webhook_route_records_payment_and_persists_customer_for_paid_invoice() {
         let stripe = build_test_stripe_config("http://127.0.0.1:9".to_string());
         let mock_accounts = Arc::new(MockAccounts::default());
         let accounts: Arc<dyn AccountsRepo> = mock_accounts.clone();
@@ -606,6 +855,9 @@ mod tests {
                     "paid": true,
                     "amount_paid": 1500,
                     "customer": "cus_webhook_789",
+                    "status_transitions": {
+                        "paid_at": 1710000000
+                    },
                     "subscription_details": {
                         "metadata": {
                             "clerk_user_id": "user_789",
@@ -621,13 +873,13 @@ mod tests {
         });
         let body_bytes = serde_json::to_vec(&body).expect("webhook body should serialize");
 
-        let timestamp = "1710000000";
+        let timestamp = Utc::now().timestamp().to_string();
         let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(&body_bytes));
         let mut mac = Hmac::<Sha256>::new_from_slice(stripe.webhook_secret.as_bytes())
             .expect("hmac init should succeed");
         mac.update(signed_payload.as_bytes());
         let signature = hex::encode(mac.finalize().into_bytes());
-        let sig_header = format!("t={timestamp},v1={signature}");
+        let sig_header = format!("t={},v1={}", timestamp, signature);
 
         let response = app
             .oneshot(
@@ -648,10 +900,120 @@ mod tests {
             state.set_customer_calls,
             vec![("user_789".to_string(), "cus_webhook_789".to_string())]
         );
-        assert_eq!(
-            state.update_tier_calls,
-            vec![("user_789".to_string(), "soulful".to_string())]
-        );
+        assert_eq!(state.update_tier_calls, Vec::<(String, String)>::new());
+        assert_eq!(state.record_payment_calls.len(), 1);
+        assert_eq!(state.record_payment_calls[0].0, "user_789");
+        assert_eq!(state.record_payment_calls[0].1, "soulful");
+    }
+
+    #[tokio::test]
+    async fn webhook_route_resolves_user_from_customer_mapping_when_metadata_missing() {
+        let stripe = build_test_stripe_config("http://127.0.0.1:9".to_string());
+        let mock_accounts = Arc::new(MockAccounts::default());
+        mock_accounts
+            .seed_customer("user_from_customer", "cus_lookup_123")
+            .await;
+        let accounts: Arc<dyn AccountsRepo> = mock_accounts.clone();
+
+        let app = Router::new()
+            .route("/stripe/webhook", post(stripe_webhook_handler))
+            .with_state(build_test_context(accounts, stripe.clone()));
+
+        let body = json!({
+            "type": "invoice.payment_succeeded",
+            "data": {
+                "object": {
+                    "paid": true,
+                    "amount_paid": 1900,
+                    "customer": "cus_lookup_123",
+                    "status_transitions": {
+                        "paid_at": 1710000200
+                    },
+                    "metadata": {
+                        "tier": "resonant"
+                    }
+                }
+            }
+        });
+        let body_bytes = serde_json::to_vec(&body).expect("webhook body should serialize");
+
+        let timestamp = Utc::now().timestamp().to_string();
+        let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(&body_bytes));
+        let mut mac = Hmac::<Sha256>::new_from_slice(stripe.webhook_secret.as_bytes())
+            .expect("hmac init should succeed");
+        mac.update(signed_payload.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+        let sig_header = format!("t={},v1={}", timestamp, signature);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/stripe/webhook")
+                    .header("stripe-signature", sig_header)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body_bytes))
+                    .expect("webhook request should build"),
+            )
+            .await
+            .expect("webhook request should complete");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let state = mock_accounts.snapshot().await;
+        assert_eq!(state.get_user_by_customer_calls, vec!["cus_lookup_123".to_string()]);
+        assert_eq!(state.record_payment_calls.len(), 1);
+        assert_eq!(state.record_payment_calls[0].0, "user_from_customer");
+    }
+
+    #[tokio::test]
+    async fn webhook_route_records_cancellation_without_immediate_downgrade() {
+        let stripe = build_test_stripe_config("http://127.0.0.1:9".to_string());
+        let mock_accounts = Arc::new(MockAccounts::default());
+        let accounts: Arc<dyn AccountsRepo> = mock_accounts.clone();
+
+        let app = Router::new()
+            .route("/stripe/webhook", post(stripe_webhook_handler))
+            .with_state(build_test_context(accounts, stripe.clone()));
+
+        let body = json!({
+            "type": "customer.subscription.deleted",
+            "data": {
+                "object": {
+                    "canceled_at": 1710000100,
+                    "metadata": {
+                        "clerk_user_id": "user_cancel_1"
+                    }
+                }
+            }
+        });
+        let body_bytes = serde_json::to_vec(&body).expect("webhook body should serialize");
+
+        let timestamp = Utc::now().timestamp().to_string();
+        let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(&body_bytes));
+        let mut mac = Hmac::<Sha256>::new_from_slice(stripe.webhook_secret.as_bytes())
+            .expect("hmac init should succeed");
+        mac.update(signed_payload.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+        let sig_header = format!("t={},v1={}", timestamp, signature);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/stripe/webhook")
+                    .header("stripe-signature", sig_header)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body_bytes))
+                    .expect("webhook request should build"),
+            )
+            .await
+            .expect("webhook request should complete");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let state = mock_accounts.snapshot().await;
+        assert_eq!(state.update_tier_calls, Vec::<(String, String)>::new());
+        assert_eq!(state.mark_cancelled_calls.len(), 1);
+        assert_eq!(state.mark_cancelled_calls[0].0, "user_cancel_1");
     }
 
     #[test]
@@ -666,7 +1028,7 @@ mod tests {
     fn verify_stripe_signature_accepts_valid_signature() {
         let body = br#"{"id":"evt_123","type":"invoice.payment_succeeded"}"#;
         let secret = "whsec_test_secret";
-        let timestamp = "1710000000";
+        let timestamp = Utc::now().timestamp().to_string();
         let payload = format!("{}.{}", timestamp, String::from_utf8_lossy(body));
 
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
@@ -675,15 +1037,32 @@ mod tests {
         let signature = hex::encode(mac.finalize().into_bytes());
         let sig_header = format!("t={},v1={}", timestamp, signature);
 
-        assert!(verify_stripe_signature(body, &sig_header, secret));
+        assert!(verify_stripe_signature(body, &sig_header, secret, 300));
     }
 
     #[test]
     fn verify_stripe_signature_rejects_invalid_signature() {
         let body = br#"{"id":"evt_123"}"#;
         let secret = "whsec_test_secret";
-        let sig_header = "t=1710000000,v1=deadbeef";
+        let timestamp = Utc::now().timestamp().to_string();
+        let sig_header = format!("t={},v1=deadbeef", timestamp);
 
-        assert!(!verify_stripe_signature(body, sig_header, secret));
+        assert!(!verify_stripe_signature(body, &sig_header, secret, 300));
+    }
+
+    #[test]
+    fn verify_stripe_signature_rejects_stale_timestamps() {
+        let body = br#"{"id":"evt_123","type":"invoice.payment_succeeded"}"#;
+        let secret = "whsec_test_secret";
+        let timestamp = (Utc::now().timestamp() - 400).to_string();
+        let payload = format!("{}.{}", timestamp, String::from_utf8_lossy(body));
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+            .expect("hmac init should succeed");
+        mac.update(payload.as_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+        let sig_header = format!("t={},v1={}", timestamp, signature);
+
+        assert!(!verify_stripe_signature(body, &sig_header, secret, 300));
     }
 }

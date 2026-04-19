@@ -55,7 +55,9 @@ async fn enforce_cloud_sync_entitlement(
             AppError::unauthorized("account record missing for authenticated user".to_string())
         })?;
 
-    if has_cloud_sync_tier(&account.tier) {
+    let effective_tier = account.effective_tier();
+
+    if has_cloud_sync_tier(&effective_tier) {
         return Ok(());
     }
 
