@@ -2,7 +2,7 @@
 
 ## Goal
 
-Promote live chat to a dedicated first-class surface and move importare responsibilities into Alkahest, while preserving existing behaviors:
+Promote live chat to a dedicated first-class surface and move node-import responsibilities into Alkahest, while preserving existing behaviors:
 
 - cross-session continue routing
 - context injection from node cards
@@ -11,17 +11,17 @@ Promote live chat to a dedicated first-class surface and move importare responsi
 
 ## Why This Split
 
-- Chat and importare have different jobs and interaction rhythms.
+- Chat and direct import have different jobs and interaction rhythms.
 - Alkahest already owns ritualized transformation and storage flows.
 - Camera integration becomes cleaner when each surface has one primary purpose.
 
 ## Current Wiring Snapshot
 
-- Chat + importare mode switch lives in `Weaver.svelte` via `composeMode` and `openCompose('live' | 'importare')`.
-- Launcher menu currently exposes both `create live` and `importare` via `ComposeLauncher.svelte`.
+- Chat is live-only in `Weaver.svelte` via a single `openCompose()` flow.
+- Launcher menu exposes only `create live` via `ComposeLauncher.svelte`.
 - Importare save path is currently handled by compose paste mode (`composePasteNodeDraft` + `saveComposePastedNode`).
 - Alkahest has a staged flow (`scan -> configure -> run`) and already performs distill/store/export behavior.
-- Walkthrough expects `importare` on compose launcher target (`compose-importare`).
+- Walkthrough import phase targets Alkahest import selector (`alkahest-import`).
 
 ## Target Product Map
 
@@ -35,12 +35,12 @@ Promote live chat to a dedicated first-class surface and move importare responsi
 
 1. Keep existing compose internals, but rename user-facing terminology from compose to chat where visible.
 2. Keep all chat behavior intact (tabs, context inject, auto-encode, provider usage, threshold UI).
-3. Restrict launcher to one primary chat action and remove importare from launcher menu.
+3. Restrict launcher to one primary chat action and remove import entry from launcher menu.
 
 Deliverables:
 
 - chat-only launcher action
-- no importare entrypoint in launcher
+- no import entrypoint in launcher
 - all live thread behaviors preserved
 
 Acceptance:
@@ -54,22 +54,28 @@ Acceptance:
 1. Add an explicit Alkahest mode for direct node import (paste + validate + store).
 2. Reuse existing store pipeline semantics (`storeContext` validity + status handling).
 3. Keep import path independent from chat state so import does not mutate active chat thread.
+4. Shape phase 1 as dual branch prep:
+  - phase 1a import prep: target session + raw node payload
+  - phase 1b export prep: scope selection + stabilization scan
+5. Both phase-1 branches converge into phase 2 (bind intention) then phase 3 (extract / execute).
 
 Deliverables:
 
 - import UI lives in Alkahest panel flow
 - import success/failure messaging aligned with existing Alkahest status style
-- no importare branch required inside chat surface
+- no legacy import branch required inside chat surface
+- 4-step Alkahest flow: 0 decision -> 1 dual prep -> 2 bind -> 3 execute
 
 Acceptance:
 
 - pasted node save works from Alkahest with same validation semantics
 - duplicate/upsert status surfaced
 - graph refresh behavior matches existing store flows
+- import and export branches both unlock and progress cleanly into phase 2 and phase 3
 
 ### Phase 3: Remove Legacy Compose Import Branch
 
-1. Remove `importare` mode branching from chat container.
+1. Remove legacy import mode branching from chat container.
 2. Remove compose paste panel wiring from chat state.
 3. Keep encode-save-continue flow as chat-native action.
 
@@ -92,7 +98,7 @@ Acceptance:
 Deliverables:
 
 - walkthrough uses Alkahest import selector
-- no compose-importare dependency remains
+- no compose import dependency remains
 
 Acceptance:
 
@@ -115,10 +121,11 @@ Acceptance:
 
 ## Implementation Order (Recommended)
 
-1. Phase 1 and Phase 2 behind a small feature flag if needed.
-2. Phase 3 cleanup immediately after Phase 2 validation.
-3. Phase 4 walkthrough target migration.
-4. Phase 5 camera scaffolding.
+1. Phase 0 + Phase 2 route mechanics behind a small feature flag if needed.
+2. Phase 1 launcher/chat decoupling and walkthrough retarget.
+3. Phase 3 cleanup immediately after route validation.
+4. Phase 4 walkthrough target migration cleanup.
+5. Phase 5 camera scaffolding.
 
 ## Regression Checklist
 

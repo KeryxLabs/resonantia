@@ -21,7 +21,6 @@
     ComposeContextSession,
     ComposeLiveUiProps,
     ComposeMessage,
-    ComposeMode,
     ComposeProviderUsage,
     CrossSessionRoutingPreference,
   } from './components/compose/types';
@@ -689,7 +688,7 @@
         return '[data-tour-target="telescope"]';
       case 'alkahest':
         return '[data-tour-target="alkahest"]';
-      case 'importare':
+      case 'import':
         return '[data-tour-target="alkahest-import"]';
       case 'live':
         return '[data-tour-target="compose-live"]';
@@ -708,10 +707,10 @@
         return ['[data-tour-target="telescope"]'];
       case 'alkahest':
         return ['[data-tour-target="alkahest"]'];
-      case 'importare':
+      case 'import':
         return ['[data-tour-target="alkahest-import"]', '[data-tour-target="alkahest"]'];
       case 'live':
-        return ['[data-tour-target="compose-live"]', '[data-tour-target="compose-toggle"]'];
+        return ['[data-tour-target="compose-live"]'];
       default:
         return [];
     }
@@ -734,7 +733,7 @@
     walkthroughStepSatisfied = false;
   }
 
-  $: if (onboardingOpen && walkthroughStep === 'importare' && alkahestMode === 'import') {
+  $: if (onboardingOpen && walkthroughStep === 'import' && alkahestMode === 'import') {
     walkthroughStepSatisfied = true;
   }
 
@@ -886,7 +885,7 @@
         });
         break;
       case 'alkahest':
-        queueWalkthroughAdvance('importare', {
+        queueWalkthroughAdvance('import', {
           holdMs: 220,
           cueDelayMs: 260,
           before: () => {
@@ -894,13 +893,12 @@
           },
         });
         break;
-      case 'importare':
+      case 'import':
         queueWalkthroughAdvance('live', {
           holdMs: 220,
           cueDelayMs: 260,
           before: () => {
             closeAlkahestPanel();
-            composeModeMenuOpen = false;
           },
         });
         break;
@@ -909,7 +907,6 @@
           holdMs: 220,
           cueDelayMs: 0,
           before: () => {
-            composeModeMenuOpen = false;
             closeComposeDrawer();
             closeTelescope();
             menuOpen = false;
@@ -1463,6 +1460,16 @@
     closeComposeDrawer();
     calibrateOpen = false;
     settingsOpen = false;
+
+    if (composeCameraBefore) {
+      camX = targetCamX = composeCameraBefore.x;
+      camY = targetCamY = composeCameraBefore.y;
+      camScale = targetCamScale = composeCameraBefore.scale;
+    }
+
+    composeOpen = false;
+    composePhase = 'idle';
+    composeCameraBefore = null;
 
     if (alkahestCameraBefore) {
       camX = targetCamX = alkahestCameraBefore.x;
@@ -2048,6 +2055,7 @@
 
     settleTelescopeTransition();
     settleAlkahestTransition();
+    settleComposeTransition();
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -2116,6 +2124,13 @@
 
     if (alkahestPhase === 'entering' && alkahestCameraBefore) {
       const focus = alkahestFocusTargetFrom(alkahestCameraBefore, level);
+      targetCamX = focus.x;
+      targetCamY = focus.y;
+      targetCamScale = focus.scale;
+    }
+
+    if (composePhase === 'entering' && composeCameraBefore) {
+      const focus = composeFocusTargetFrom(composeCameraBefore, level);
       targetCamX = focus.x;
       targetCamY = focus.y;
       targetCamScale = focus.scale;
@@ -2698,8 +2713,6 @@
 
   // ── Compose ──────────────────────────────────────────────────
   let composeOpen     = false;
-  let composeModeMenuOpen = false;
-  let composeMode: ComposeMode = 'live';
   let composeDraft    = '';
   type ComposeContextNodeItem = ComposeContextNode & {
     raw: string;
@@ -2996,6 +3009,7 @@
 
   type TelescopePhase = 'idle' | 'entering' | 'exiting';
   type AlkahestPhase = 'idle' | 'entering' | 'exiting';
+  type ComposePhase = 'idle' | 'entering' | 'exiting';
   type CameraState = { x: number; y: number; scale: number };
 
   let telescopeOpen = false;
@@ -3008,6 +3022,8 @@
   let telescopeTimelineSessions: GraphSessionDto[] = [];
   let telescopePhase: TelescopePhase = 'idle';
   let telescopeCameraBefore: CameraState | null = null;
+  let composePhase: ComposePhase = 'idle';
+  let composeCameraBefore: CameraState | null = null;
 
   $: telescopeCanAccess = level === 0 || level === 1;
   $: telescopeCameraEngaged = telescopeOpen || telescopePhase !== 'idle';
@@ -3268,6 +3284,72 @@
     }
   }
 
+  function composeAnchorScreenPoint() {
+    const compact = W() <= 520;
+    return {
+      x: W() / 2,
+      y: H() / 2 + (compact ? 12 : 18),
+    };
+  }
+
+  function composeFocusScaleFor(levelValue: number, cameraScale: number) {
+    const compact = compactViewport();
+
+    if (levelValue === 1) {
+      return Math.max(compact ? 1.4 : 1.58, Math.min(TELESCOPE_WAVE_SCALE, cameraScale * (compact ? 0.64 : 0.7)));
+    }
+
+    return Math.max(compact ? 0.84 : 0.92, Math.min(TELESCOPE_CONSTELLATION_SCALE, cameraScale * (compact ? 0.82 : 0.86)));
+  }
+
+  function composeFocusTargetFrom(camera: CameraState, levelValue: number) {
+    const anchor = composeAnchorScreenPoint();
+    const world = worldAtScreenForCamera(anchor.x, anchor.y, camera);
+    const scale = composeFocusScaleFor(levelValue, camera.scale);
+    return {
+      x: world.x,
+      y: world.y,
+      scale,
+    };
+  }
+
+  function beginComposeEnterTransition() {
+    const startCamera = { x: camX, y: camY, scale: camScale };
+    composeCameraBefore = startCamera;
+    const focus = composeFocusTargetFrom(startCamera, level);
+    targetCamX = focus.x;
+    targetCamY = focus.y;
+    targetCamScale = focus.scale;
+    composePhase = 'entering';
+  }
+
+  function beginComposeExitTransition() {
+    composeOpen = false;
+
+    if (!composeCameraBefore) {
+      composePhase = 'idle';
+      return;
+    }
+
+    targetCamX = composeCameraBefore.x;
+    targetCamY = composeCameraBefore.y;
+    targetCamScale = composeCameraBefore.scale;
+    composePhase = 'exiting';
+  }
+
+  function settleComposeTransition() {
+    if (composePhase === 'entering' && cameraAtTarget()) {
+      composePhase = 'idle';
+      composeOpen = true;
+      return;
+    }
+
+    if (composePhase === 'exiting' && cameraAtTarget()) {
+      composePhase = 'idle';
+      composeCameraBefore = null;
+    }
+  }
+
   function toggleNegativeLayer() {
     if (level !== 0 || cameraOverlayEngaged) {
       return;
@@ -3411,11 +3493,28 @@
   $: if (!telescopeCanAccess && telescopeCameraEngaged && telescopePhase !== 'exiting') {
     beginTelescopeExitTransition();
   }
-  $: if (onboardingOpen && walkthroughStep !== 'alkahest' && alkahestCameraEngaged && alkahestPhase !== 'exiting') {
+  $: if (
+    onboardingOpen
+    && walkthroughStep !== 'alkahest'
+    && walkthroughStep !== 'import'
+    && alkahestCameraEngaged
+    && alkahestPhase !== 'exiting'
+  ) {
     beginAlkahestExitTransition();
   }
   $: if (level > 1 && alkahestCameraEngaged && alkahestPhase !== 'exiting') {
     beginAlkahestExitTransition();
+  }
+  $: if (
+    onboardingOpen
+    && walkthroughStep !== 'live'
+    && composeCameraEngaged
+    && composePhase !== 'exiting'
+  ) {
+    beginComposeExitTransition();
+  }
+  $: if (level > 1 && composeCameraEngaged && composePhase !== 'exiting') {
+    beginComposeExitTransition();
   }
 
   type AlkahestScope = 'session' | 'sessions' | 'timeline' | 'resonance';
@@ -3505,8 +3604,9 @@
   let alkahestPhase: AlkahestPhase = 'idle';
   let alkahestCameraBefore: CameraState | null = null;
 
+  $: composeCameraEngaged = composeOpen || composePhase !== 'idle';
   $: alkahestCameraEngaged = alkahestOpen || alkahestPhase !== 'idle';
-  $: cameraOverlayEngaged = telescopeCameraEngaged || alkahestCameraEngaged;
+  $: cameraOverlayEngaged = telescopeCameraEngaged || alkahestCameraEngaged || composeCameraEngaged;
 
   function defaultAlkahestTargetSessionId() {
     const now = new Date();
@@ -3800,7 +3900,6 @@
     noteInteraction();
     markWalkthroughStepSatisfied('alkahest');
     closeTransientUi();
-    composeModeMenuOpen = false;
     syncDetailAutoOpen = false;
     syncDetailHover = false;
 
@@ -4303,7 +4402,7 @@
   }
 
   function snapshotActiveComposeTab() {
-    if (composeMode !== 'live' || !composeActiveTabId) {
+    if (!composeActiveTabId) {
       return;
     }
 
@@ -4600,7 +4699,16 @@
   function closeComposeDrawer() {
     snapshotActiveComposeTab();
     closeComposeContinueChooser();
-    composeOpen = false;
+
+    if (!composeCameraEngaged) {
+      composeOpen = false;
+      composePhase = 'idle';
+      composeCameraBefore = null;
+      return;
+    }
+
+    noteInteraction();
+    beginComposeExitTransition();
   }
 
   function handleComposeDraftInput() {
@@ -4637,15 +4745,15 @@
     ].join('\n');
   }
 
-  function openCompose(mode: 'live' = 'live') {
+  function openCompose() {
     snapshotActiveComposeTab();
     closeComposeContinueChooser();
-    composeModeMenuOpen = false;
-    composeMode = mode;
 
-    if (mode === 'live') {
-      ensureComposeLiveTab();
+    if (cameraOverlayEngaged && !composeCameraEngaged) {
+      return;
     }
+
+    ensureComposeLiveTab();
 
     composeError = null;
     composeResult = null;
@@ -4660,9 +4768,14 @@
     composePasteNodeOpen = false;
     composePasteNodeDraft = '';
     composePasteNodeLoading = false;
-    composeOpen = true;
 
-    if (mode === 'live' && composeContextBrowseSessionId) {
+    if (composeCameraEngaged) {
+      composeOpen = true;
+    } else {
+      beginComposeEnterTransition();
+    }
+
+    if (composeContextBrowseSessionId) {
       void loadComposeContextNodes(composeContextBrowseSessionId);
     }
   }
@@ -4737,8 +4850,6 @@
       return;
     }
 
-    composeModeMenuOpen = false;
-    composeMode = 'live';
     composeError = null;
     composeResult = null;
     composeLoading = false;
@@ -4782,7 +4893,12 @@
     composePasteNodeOpen = false;
     composePasteNodeDraft = '';
     composePasteNodeLoading = false;
-    composeOpen = true;
+
+    if (composeCameraEngaged) {
+      composeOpen = true;
+    } else if (!cameraOverlayEngaged) {
+      beginComposeEnterTransition();
+    }
     snapshotActiveComposeTab();
 
     void sendComposeMessage(prompt, {
@@ -4836,26 +4952,10 @@
     applyContinueThreadInCompose(normalizedDetail, 'match-session');
   }
 
-  function toggleComposeModeMenu() {
-    composeModeMenuOpen = !composeModeMenuOpen;
-  }
-
   function openComposeLive() {
+    noteInteraction();
     markWalkthroughStepSatisfied('live');
-    composeModeMenuOpen = false;
-    openCompose('live');
-  }
-
-  function switchComposeToLive() {
-    markWalkthroughStepSatisfied('live');
-    composeMode = 'live';
-    composePasteNodeOpen = false;
-    composePasteNodeDraft = '';
-    ensureComposeLiveTab();
-
-    if (composeContextBrowseSessionId) {
-      void loadComposeContextNodes(composeContextBrowseSessionId);
-    }
+    openCompose();
   }
 
   function handleComposeSessionInput() {
@@ -5340,8 +5440,7 @@
   $: {
     const autoSignature = composeAutoEncodeSignature();
     if (
-      composeMode === 'live'
-      && composeAutoEncodeEnabled
+      composeAutoEncodeEnabled
       && autoSignature
       && composeDraft.trim().length === 0
       && !composeReplyLoading
@@ -5855,10 +5954,8 @@
 
   <ComposeLauncher
     faded={cameraOverlayEngaged}
-    hidden={composeOpen}
-    menuOpen={composeModeMenuOpen}
-    on:toggle={toggleComposeModeMenu}
-    on:live={openComposeLive}
+    hidden={composeCameraEngaged}
+    on:open={openComposeLive}
   />
 
   <AlkahestPanel
@@ -6051,7 +6148,6 @@
   <ComposeDrawer
     {...composeLiveUiProps}
     open={composeOpen}
-    mode={composeMode}
     bind:sessionId={composeSessionId}
     bind:draft={composeDraft}
     messages={composeMessages}
@@ -6072,7 +6168,6 @@
     copyComposeEncodePrompt={copyComposeEncodePrompt}
     toggleComposePasteNode={toggleComposePasteNode}
     clearComposeConversation={clearComposeConversation}
-    switchComposeToLive={switchComposeToLive}
     saveComposePastedNode={saveComposePastedNode}
     submitCompose={submitCompose}
   />

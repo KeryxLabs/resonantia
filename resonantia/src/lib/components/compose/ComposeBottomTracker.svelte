@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { ComposeCalibrationAvec, ComposeProviderUsage, ComposeTokenUsage } from "./types";
 
-  export let mode: "live" | "importare" = "live";
   export let sessionId = "";
   export let tokenUsage: ComposeTokenUsage = {
     contextTokens: 0,
@@ -101,106 +100,104 @@
 
 <svelte:window on:pointerdown={handleWindowPointerDown} />
 
-{#if mode === 'live'}
-  <div class="compose-status-bar">
-    <div class="compose-status-copy">
-      <p class="compose-encode-hint visible" class:warm={contextWarm} class:critical={contextCritical}>{contextHint}</p>
-      <p class="compose-context-readout">{contextReadout}</p>
-    </div>
+<div class="compose-status-bar">
+  <div class="compose-status-copy">
+    <p class="compose-encode-hint visible" class:warm={contextWarm} class:critical={contextCritical}>{contextHint}</p>
+    <p class="compose-context-readout">{contextReadout}</p>
+  </div>
 
-    <div class="compose-avec-row" bind:this={rowEl}>
-      <button
-        class="compose-avec-orb-btn"
-        type="button"
-        aria-expanded={popoverOpen}
-        aria-label="toggle session avec metrics"
-        on:click={togglePopover}
-      >
-        <span class="compose-avec-orb context" class:warm={contextWarm} class:critical={contextCritical}>
-          <span class="compose-avec-orb-fill" style={`height:${orbFill(usagePercent)};`}></span>
-          <span class="compose-avec-dot"></span>
-        </span>
-        <span class="compose-avec-orb stability">
-          <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.stability * 100)};`}></span>
-          <span class="compose-avec-dot"></span>
-        </span>
-        <span class="compose-avec-orb friction">
-          <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.friction * 100)};`}></span>
-          <span class="compose-avec-dot"></span>
-        </span>
-        <span class="compose-avec-orb logic">
-          <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.logic * 100)};`}></span>
-          <span class="compose-avec-dot"></span>
-        </span>
-        <span class="compose-avec-orb autonomy">
-          <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.autonomy * 100)};`}></span>
-          <span class="compose-avec-dot"></span>
-        </span>
-      </button>
+  <div class="compose-avec-row" bind:this={rowEl}>
+    <button
+      class="compose-avec-orb-btn"
+      type="button"
+      aria-expanded={popoverOpen}
+      aria-label="toggle session avec metrics"
+      on:click={togglePopover}
+    >
+      <span class="compose-avec-orb context" class:warm={contextWarm} class:critical={contextCritical}>
+        <span class="compose-avec-orb-fill" style={`height:${orbFill(usagePercent)};`}></span>
+        <span class="compose-avec-dot"></span>
+      </span>
+      <span class="compose-avec-orb stability">
+        <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.stability * 100)};`}></span>
+        <span class="compose-avec-dot"></span>
+      </span>
+      <span class="compose-avec-orb friction">
+        <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.friction * 100)};`}></span>
+        <span class="compose-avec-dot"></span>
+      </span>
+      <span class="compose-avec-orb logic">
+        <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.logic * 100)};`}></span>
+        <span class="compose-avec-dot"></span>
+      </span>
+      <span class="compose-avec-orb autonomy">
+        <span class="compose-avec-orb-fill" style={`height:${orbFill(calibrationAvec.autonomy * 100)};`}></span>
+        <span class="compose-avec-dot"></span>
+      </span>
+    </button>
 
-      <div class="compose-avec-popover" class:visible={popoverOpen} role="dialog" aria-label="session avec metrics">
-        <div class="compose-pop-title">session avec · live</div>
+    <div class="compose-avec-popover" class:visible={popoverOpen} role="dialog" aria-label="session avec metrics">
+      <div class="compose-pop-title">session avec · live</div>
 
-        <div class="compose-pop-row">
-          <span class="compose-pop-swatch context"></span>
-          <span class="compose-pop-label">context</span>
-          <span class="compose-pop-track"><span class="compose-pop-fill context" style={`width:${orbFill(usagePercent)};`}></span></span>
-          <span class="compose-pop-val">{Math.round(usagePercent)}%</span>
-        </div>
+      <div class="compose-pop-row">
+        <span class="compose-pop-swatch context"></span>
+        <span class="compose-pop-label">context</span>
+        <span class="compose-pop-track"><span class="compose-pop-fill context" style={`width:${orbFill(usagePercent)};`}></span></span>
+        <span class="compose-pop-val">{Math.round(usagePercent)}%</span>
+      </div>
 
-        <div class="compose-pop-row">
-          <span class="compose-pop-swatch stability"></span>
-          <span class="compose-pop-label">stability</span>
-          <span class="compose-pop-track"><span class="compose-pop-fill stability" style={`width:${orbFill(calibrationAvec.stability * 100)};`}></span></span>
-          <span class="compose-pop-val">{formatAvecValue(calibrationAvec.stability)}</span>
-        </div>
+      <div class="compose-pop-row">
+        <span class="compose-pop-swatch stability"></span>
+        <span class="compose-pop-label">stability</span>
+        <span class="compose-pop-track"><span class="compose-pop-fill stability" style={`width:${orbFill(calibrationAvec.stability * 100)};`}></span></span>
+        <span class="compose-pop-val">{formatAvecValue(calibrationAvec.stability)}</span>
+      </div>
 
-        <div class="compose-pop-row">
-          <span class="compose-pop-swatch friction"></span>
-          <span class="compose-pop-label">friction</span>
-          <span class="compose-pop-track"><span class="compose-pop-fill friction" style={`width:${orbFill(calibrationAvec.friction * 100)};`}></span></span>
-          <span class="compose-pop-val">{formatAvecValue(calibrationAvec.friction)}</span>
-        </div>
+      <div class="compose-pop-row">
+        <span class="compose-pop-swatch friction"></span>
+        <span class="compose-pop-label">friction</span>
+        <span class="compose-pop-track"><span class="compose-pop-fill friction" style={`width:${orbFill(calibrationAvec.friction * 100)};`}></span></span>
+        <span class="compose-pop-val">{formatAvecValue(calibrationAvec.friction)}</span>
+      </div>
 
-        <div class="compose-pop-row">
-          <span class="compose-pop-swatch logic"></span>
-          <span class="compose-pop-label">logic</span>
-          <span class="compose-pop-track"><span class="compose-pop-fill logic" style={`width:${orbFill(calibrationAvec.logic * 100)};`}></span></span>
-          <span class="compose-pop-val">{formatAvecValue(calibrationAvec.logic)}</span>
-        </div>
+      <div class="compose-pop-row">
+        <span class="compose-pop-swatch logic"></span>
+        <span class="compose-pop-label">logic</span>
+        <span class="compose-pop-track"><span class="compose-pop-fill logic" style={`width:${orbFill(calibrationAvec.logic * 100)};`}></span></span>
+        <span class="compose-pop-val">{formatAvecValue(calibrationAvec.logic)}</span>
+      </div>
 
-        <div class="compose-pop-row">
-          <span class="compose-pop-swatch autonomy"></span>
-          <span class="compose-pop-label">autonomy</span>
-          <span class="compose-pop-track"><span class="compose-pop-fill autonomy" style={`width:${orbFill(calibrationAvec.autonomy * 100)};`}></span></span>
-          <span class="compose-pop-val">{formatAvecValue(calibrationAvec.autonomy)}</span>
-        </div>
+      <div class="compose-pop-row">
+        <span class="compose-pop-swatch autonomy"></span>
+        <span class="compose-pop-label">autonomy</span>
+        <span class="compose-pop-track"><span class="compose-pop-fill autonomy" style={`width:${orbFill(calibrationAvec.autonomy * 100)};`}></span></span>
+        <span class="compose-pop-val">{formatAvecValue(calibrationAvec.autonomy)}</span>
+      </div>
 
-        <hr class="compose-pop-divider" />
+      <hr class="compose-pop-divider" />
 
-        <div class="compose-pop-footer">
-          Ψ {calibrationAvec.psi.toFixed(2)}
-          {#if providerModelLabel}
-            · {providerModelLabel}
-          {/if}
-        </div>
-        <div class="compose-pop-footer muted">
-          {#if providerSpentKnown}
-            provider spent {formatTokenCount(providerUsage.totalTokens)} tokens
-          {:else}
-            provider usage pending
-          {/if}
-          {#if sessionId.trim()}
-            · {sessionId.trim()}
-          {/if}
-          {#if autoEncodeEnabled}
-            · auto {Math.round(thresholdPercent)}%
-          {/if}
-        </div>
+      <div class="compose-pop-footer">
+        Ψ {calibrationAvec.psi.toFixed(2)}
+        {#if providerModelLabel}
+          · {providerModelLabel}
+        {/if}
+      </div>
+      <div class="compose-pop-footer muted">
+        {#if providerSpentKnown}
+          provider spent {formatTokenCount(providerUsage.totalTokens)} tokens
+        {:else}
+          provider usage pending
+        {/if}
+        {#if sessionId.trim()}
+          · {sessionId.trim()}
+        {/if}
+        {#if autoEncodeEnabled}
+          · auto {Math.round(thresholdPercent)}%
+        {/if}
       </div>
     </div>
   </div>
-{/if}
+  </div>
 
 <style>
   .compose-status-bar {

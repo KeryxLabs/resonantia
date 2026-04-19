@@ -1,7 +1,4 @@
 <script lang="ts">
-  import type { ComposeMode } from "./types";
-
-  export let mode: ComposeMode = "live";
   export let sessionId = "";
   export let pasteNodeDraft = "";
   export let pasteNodeLoading = false;
@@ -43,9 +40,7 @@
     {/if}
   </div>
   <div class="compose-paste-actions">
-    {#if mode === 'live'}
-      <button class="drawer-btn cancel" on:click={toggleComposePasteNode} disabled={pasteNodeLoading}>cancel paste</button>
-    {/if}
+    <button class="drawer-btn cancel" on:click={toggleComposePasteNode} disabled={pasteNodeLoading}>cancel paste</button>
     <button class="drawer-btn submit" on:click={saveComposePastedNode} disabled={pasteNodeLoading || !pasteNodeDraft.trim() || !sessionId.trim()}>
       {pasteNodeLoading ? 'saving…' : 'save pasted node'}
     </button>

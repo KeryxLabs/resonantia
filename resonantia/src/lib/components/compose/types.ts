@@ -1,4 +1,4 @@
-export type ComposeMode = "live" | "importare";
+export type ComposeMode = "live";
 
 export type CrossSessionRoutingPreference = "ask" | "match-session" | "active-tab";
 

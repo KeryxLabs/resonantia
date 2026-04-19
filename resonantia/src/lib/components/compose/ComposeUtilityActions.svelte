@@ -1,7 +1,6 @@
 <script lang="ts">
-  import type { ComposeMode, CrossSessionRoutingPreference } from "./types";
+  import type { CrossSessionRoutingPreference } from "./types";
 
-  export let mode: ComposeMode = "live";
   export let loading = false;
   export let replyLoading = false;
   export let promptCopyLoading = false;
@@ -19,7 +18,6 @@
   export let clearComposeConversation: () => void = () => {};
   export let toggleChatSettingsPopup: () => void = () => {};
   export let clearCrossSessionRoutingPreference: () => void = () => {};
-  export let switchComposeToLive: () => void = () => {};
 
   function crossSessionRoutingLabel(preference: CrossSessionRoutingPreference) {
     if (preference === "active-tab") {
@@ -38,48 +36,43 @@
   <button class="compose-link-btn compose-link-pill compose-link-pill-gold" on:click={copyComposeEncodePrompt} disabled={promptCopyLoading || loading || replyLoading}>
     {promptCopyLoading ? 'copying distill prompt…' : promptCopied ? 'distill prompt copied' : 'copy distill prompt'}
   </button>
-  {#if mode === 'live'}
-    <span class="compose-utility-divider">•</span>
-    <button class="compose-link-btn compose-link-pill" on:click={toggleComposePasteNode} disabled={pasteNodeLoading || loading || replyLoading}>
-      {pasteNodeOpen ? 'hide paste save' : 'paste node to save'}
-    </button>
+  <span class="compose-utility-divider">•</span>
+  <button class="compose-link-btn compose-link-pill" on:click={toggleComposePasteNode} disabled={pasteNodeLoading || loading || replyLoading}>
+    {pasteNodeOpen ? 'hide paste save' : 'paste node to save'}
+  </button>
+  <span class="compose-utility-divider">•</span>
+  <button
+    class="compose-link-btn compose-link-pill compose-link-pill-context"
+    class:active={contextPopupOpen}
+    on:click={toggleContextPopup}
+    disabled={loading || replyLoading}
+    aria-expanded={contextPopupOpen}
+  >
+    {contextPopupOpen ? 'hide session context' : 'session context'}
+  </button>
+  <span class="compose-utility-divider">•</span>
+  <button class="compose-link-btn compose-link-pill" on:click={clearComposeConversation} disabled={loading || replyLoading}>clear thread</button>
+  <span class="compose-utility-divider">•</span>
+  <button
+    class="compose-link-btn compose-link-pill compose-link-pill-settings"
+    class:active={chatSettingsOpen}
+    on:click={toggleChatSettingsPopup}
+    disabled={loading || replyLoading}
+    aria-expanded={chatSettingsOpen}
+  >
+    {chatSettingsOpen ? 'hide chat settings' : 'chat settings'}
+  </button>
+  <span class="compose-utility-divider">•</span>
+  <span class="compose-routing-pref">routing: {crossSessionRoutingLabel(crossSessionRoutingPreference)}</span>
+  {#if crossSessionRoutingPreference !== 'ask'}
     <span class="compose-utility-divider">•</span>
     <button
-      class="compose-link-btn compose-link-pill compose-link-pill-context"
-      class:active={contextPopupOpen}
-      on:click={toggleContextPopup}
+      class="compose-link-btn compose-link-pill compose-link-pill-routing"
+      on:click={clearCrossSessionRoutingPreference}
       disabled={loading || replyLoading}
-      aria-expanded={contextPopupOpen}
     >
-      {contextPopupOpen ? 'hide session context' : 'session context'}
+      reset routing choice
     </button>
-    <span class="compose-utility-divider">•</span>
-    <button class="compose-link-btn compose-link-pill" on:click={clearComposeConversation} disabled={loading || replyLoading}>clear thread</button>
-    <span class="compose-utility-divider">•</span>
-    <button
-      class="compose-link-btn compose-link-pill compose-link-pill-settings"
-      class:active={chatSettingsOpen}
-      on:click={toggleChatSettingsPopup}
-      disabled={loading || replyLoading}
-      aria-expanded={chatSettingsOpen}
-    >
-      {chatSettingsOpen ? 'hide chat settings' : 'chat settings'}
-    </button>
-    <span class="compose-utility-divider">•</span>
-    <span class="compose-routing-pref">routing: {crossSessionRoutingLabel(crossSessionRoutingPreference)}</span>
-    {#if crossSessionRoutingPreference !== 'ask'}
-      <span class="compose-utility-divider">•</span>
-      <button
-        class="compose-link-btn compose-link-pill compose-link-pill-routing"
-        on:click={clearCrossSessionRoutingPreference}
-        disabled={loading || replyLoading}
-      >
-        reset routing choice
-      </button>
-    {/if}
-  {:else}
-    <span class="compose-utility-divider">•</span>
-    <button class="compose-link-btn compose-link-pill compose-link-pill-live" data-tour-target="compose-switch-live" on:click={switchComposeToLive} disabled={pasteNodeLoading}>switch to create live</button>
   {/if}
 </div>
 
@@ -157,18 +150,6 @@
     color: rgba(247, 235, 210, 0.92);
     border-color: rgba(215, 191, 136, 0.45);
     background: rgba(196, 166, 104, 0.16);
-  }
-
-  .compose-link-pill-live {
-    border-color: rgba(153, 193, 121, 0.3);
-    background: rgba(118, 163, 85, 0.1);
-    color: rgba(212, 233, 189, 0.82);
-  }
-
-  .compose-link-pill-live:hover:not(:disabled) {
-    border-color: rgba(180, 219, 148, 0.43);
-    background: rgba(133, 178, 98, 0.17);
-    color: rgba(230, 244, 214, 0.9);
   }
 
   .compose-link-pill-context {

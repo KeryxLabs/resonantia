@@ -3,21 +3,14 @@
 
   export let faded = false;
   export let hidden = false;
-  export let menuOpen = false;
 
   const dispatch = createEventDispatcher<{
-    toggle: void;
-    live: void;
+    open: void;
   }>();
 </script>
 
 <div class="compose-launch" class:faded={faded} class:hidden={hidden}>
-  {#if menuOpen}
-    <div class="compose-launch-popover" role="menu" aria-label="compose options">
-      <button class="compose-launch-item" data-tour-target="compose-live" on:click={() => dispatch('live')}>create live</button>
-    </div>
-  {/if}
-  <button class="compose-btn" data-tour-target="compose-toggle" class:open={menuOpen} on:click={() => dispatch('toggle')}>+ compose</button>
+  <button class="compose-btn" data-tour-target="compose-live" on:click={() => dispatch('open')}>+ compose</button>
 </div>
 
 <style>
@@ -45,41 +38,6 @@
     pointer-events: none;
   }
 
-  .compose-launch-popover {
-    width: 146px;
-    padding: 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: rgba(10, 11, 14, 0.95);
-    border: 0.5px solid rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.26);
-  }
-
-  .compose-launch-item {
-    font-family: 'Departure Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: lowercase;
-    text-align: left;
-    color: rgba(255, 255, 255, 0.62);
-    background: transparent;
-    border: 0.5px solid transparent;
-    border-radius: 6px;
-    padding: 8px 10px;
-    cursor: pointer;
-    transition: color 0.2s, border-color 0.2s, background 0.2s;
-  }
-
-  .compose-launch-item:hover {
-    color: rgba(255, 255, 255, 0.86);
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.03);
-  }
-
   .compose-btn {
     font-family: 'Departure Mono', monospace;
     font-size: 11px;
@@ -98,12 +56,6 @@
   .compose-btn:hover {
     color: #fff;
     border-color: rgba(255, 255, 255, 0.28);
-    background: rgba(20, 23, 32, 0.95);
-  }
-
-  .compose-btn.open {
-    color: rgba(255, 255, 255, 0.86);
-    border-color: rgba(255, 255, 255, 0.3);
     background: rgba(20, 23, 32, 0.95);
   }
 </style>

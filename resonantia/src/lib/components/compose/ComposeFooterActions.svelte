@@ -11,7 +11,7 @@
 </script>
 
 <div class="drawer-actions compose-actions">
-  <button class="drawer-btn cancel" on:click={onClose}>{mode === 'importare' ? 'close' : 'cancel'}</button>
+  <button class="drawer-btn cancel" on:click={onClose}>cancel</button>
   {#if mode === 'live'}
     <button class="drawer-btn submit" on:click={submitCompose} disabled={loading || replyLoading || messagesCount === 0 || !sessionId.trim()}>
       {loading ? 'encoding…' : 'encode + save + continue'}

@@ -1,14 +1,11 @@
 <script lang="ts">
-  import type { ComposeMode } from "./types";
-
-  export let mode: ComposeMode = "live";
   export let sessionId = "";
   export let onSessionInput: () => void = () => {};
   export let onClose: () => void = () => {};
 </script>
 
 <div class="drawer-header">
-  <span class="drawer-title">{mode === "importare" ? "importare" : "compose"}</span>
+  <span class="drawer-title">compose</span>
   <button class="close-btn" on:click={onClose}>✕</button>
 </div>
 <input

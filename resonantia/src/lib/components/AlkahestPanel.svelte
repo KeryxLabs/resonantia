@@ -3,7 +3,9 @@
   import type { GraphSessionDto, ModelProvider } from '@resonantia/core';
   import AlkahestStone from './alkahest/AlkahestStone.svelte';
   import AlkahestPhaseTracker from './alkahest/AlkahestPhaseTracker.svelte';
+  import AlkahestPhaseZeroCard from './alkahest/AlkahestPhaseZeroCard.svelte';
   import AlkahestPhaseOneCard from './alkahest/AlkahestPhaseOneCard.svelte';
+  import AlkahestPhaseOneImportCard from './alkahest/AlkahestPhaseOneImportCard.svelte';
   import AlkahestPhaseTwoCard from './alkahest/AlkahestPhaseTwoCard.svelte';
   import AlkahestPhaseThreeCard from './alkahest/AlkahestPhaseThreeCard.svelte';
 
@@ -71,10 +73,12 @@
   let wasOpen = false;
   let lastObservedScanStamp = '';
   let scannedScopeKey = '';
+  let decisionCommitted = false;
   let phase2Committed = false;
   let committedPhase2Key = '';
-  let selectedPhase = 1;
-  let previousMaxVisiblePhase = 1;
+  let selectedPhase = 0;
+  let previousMaxVisiblePhase = 0;
+  let decisionRoute: 'import' | 'export' = 'export';
 
   function currentScopeKeyFor(): string {
     if (scope === 'session') {
@@ -109,7 +113,27 @@
     committedPhase2Key = '';
   }
 
+  function handleDecisionSelect(event: CustomEvent<{ route: 'import' | 'export' }>) {
+    decisionCommitted = true;
+
+    if (event.detail.route === 'import') {
+      mode = 'import';
+      selectedPhase = 1;
+    } else {
+      if (mode === 'import') {
+        mode = 'both';
+      }
+      selectedPhase = 1;
+    }
+
+    clearPhase2Commit();
+  }
+
   function handleScopeChange() {
+    clearPhase2Commit();
+  }
+
+  function handleImportPrepChange() {
     clearPhase2Commit();
   }
 
@@ -132,6 +156,7 @@
     scannedScopeKey = '';
     lastObservedScanStamp = '';
     wasOpen = false;
+    decisionCommitted = false;
     clearPhase2Commit();
     cancelAndReset();
   }
@@ -152,6 +177,9 @@
 
   $: if (open && !wasOpen) {
     wasOpen = true;
+    decisionCommitted = false;
+    selectedPhase = 0;
+    previousMaxVisiblePhase = 0;
     lastObservedScanStamp = scanStamp;
     if (scanStamp) {
       scannedScopeKey = currentScopeKey;
@@ -170,17 +198,20 @@
   }
 
   $: importMode = mode === 'import';
+  $: decisionRoute = importMode ? 'import' : 'export';
+  $: importPrepared = Boolean(targetSessionId.trim() && importNodeDraft.trim());
+  $: decisionComplete = decisionCommitted;
   $: scopeFresh = scannedScopeKey !== '' && scannedScopeKey === currentScopeKey;
   $: scopeStale = scannedScopeKey !== '' && scannedScopeKey !== currentScopeKey;
 
-  $: phase1Complete = importMode ? true : scopeFresh;
+  $: phase1Complete = decisionComplete && (importMode ? importPrepared : scopeFresh);
   $: phase2Complete = phase1Complete && phase2Committed && committedPhase2Key === currentPhase2Key;
   $: phase3Complete = phase2Complete && /distilled|exported|stored|imported|complete|finished|sealed/i.test(status ?? '');
-  $: maxVisiblePhase = phase2Complete ? 3 : 2;
+  $: maxVisiblePhase = !decisionComplete ? 0 : phase2Complete ? 3 : phase1Complete ? 2 : 1;
   $: {
     if (!open) {
-      selectedPhase = 1;
-      previousMaxVisiblePhase = 1;
+      selectedPhase = 0;
+      previousMaxVisiblePhase = 0;
     } else {
       if (maxVisiblePhase > previousMaxVisiblePhase && maxVisiblePhase === 3) {
         selectedPhase = maxVisiblePhase;
@@ -192,9 +223,9 @@
     }
   }
 
-  $: completedPhaseCount = Number(phase1Complete) + Number(phase2Complete) + Number(phase3Complete);
-  $: completionPct = Math.round((completedPhaseCount / 3) * 100);
-  $: activePhase = !phase1Complete ? 1 : !phase2Complete ? 2 : 3;
+  $: completedPhaseCount = Number(decisionComplete) + Number(phase1Complete) + Number(phase2Complete) + Number(phase3Complete);
+  $: completionPct = Math.round((completedPhaseCount / 4) * 100);
+  $: activePhase = !decisionComplete ? 0 : !phase1Complete ? 1 : !phase2Complete ? 2 : 3;
 
   $: modeNarrative =
     mode === 'export'
@@ -216,11 +247,13 @@
           ? 'distill super node'
           : 'extract + distill';
 
-  $: stageIntentLine = importMode
-    ? 'Import mode can proceed without scope scanning.'
-    : scopeFresh
-      ? `${preflightNodeCount} nodes across ${preflightSessionCount} sessions stabilized.`
-      : 'Stabilize the selected scope to reveal the next phase.';
+  $: stageIntentLine = !decisionComplete
+    ? 'Choose import or export route to unlock feedstock prep.'
+    : importMode
+      ? 'Import route: prepare target session + payload in phase 01a.'
+      : scopeFresh
+        ? `${preflightNodeCount} nodes across ${preflightSessionCount} sessions stabilized.`
+        : 'Export route: stabilize the selected scope to reveal phase 02.';
 
   $: providerLabel = String(modelProvider ?? 'unknown');
 </script>
@@ -274,10 +307,12 @@
           activePhase={activePhase}
           selectedPhase={selectedPhase}
           completionPct={completionPct}
+          phase0Complete={decisionComplete}
           phase1Complete={phase1Complete}
           phase2Complete={phase2Complete}
           phase3Complete={phase3Complete}
-          phase2Unlocked={true}
+          phase1Unlocked={decisionComplete}
+          phase2Unlocked={phase1Complete}
           phase3Unlocked={phase2Complete}
           on:select={handleTrackerSelect}
         />
@@ -285,34 +320,53 @@
         <div class="phase-popover" data-phase={selectedPhase}>
           {#key selectedPhase}
             <div class="card-motion" in:fly={{ y: 8, duration: 150, opacity: 0.14 }} out:fade={{ duration: 90 }}>
-              {#if selectedPhase === 1}
-                <AlkahestPhaseOneCard
-                  bind:scope
-                  bind:sessionId
-                  bind:sessionIds
-                  bind:timelineDays
-                  bind:resonanceDim
-                  bind:psiMin
-                  {sessions}
-                  {timelineOptions}
+              {#if selectedPhase === 0}
+                <AlkahestPhaseZeroCard
+                  selectedRoute={decisionComplete ? decisionRoute : null}
                   {loading}
                   {scopeScanning}
-                  {preflightNodeCount}
-                  {preflightWindowLabel}
-                  {preflightSessionCount}
-                  {preflightClipped}
-                  {preflightLastScannedAt}
-                  scopeFresh={phase1Complete}
-                  {scopeStale}
-                  {stageIntentLine}
-                  on:scopeChange={handleScopeChange}
-                  on:scan={scanScope}
+                  on:select={handleDecisionSelect}
                 />
+              {:else if selectedPhase === 1}
+                {#if importMode}
+                  <AlkahestPhaseOneImportCard
+                    bind:targetSessionId
+                    bind:importNodeDraft
+                    {loading}
+                    {scopeScanning}
+                    on:change={handleImportPrepChange}
+                  />
+                {:else}
+                  <AlkahestPhaseOneCard
+                    bind:scope
+                    bind:sessionId
+                    bind:sessionIds
+                    bind:timelineDays
+                    bind:resonanceDim
+                    bind:psiMin
+                    {sessions}
+                    {timelineOptions}
+                    {loading}
+                    {scopeScanning}
+                    {preflightNodeCount}
+                    {preflightWindowLabel}
+                    {preflightSessionCount}
+                    {preflightClipped}
+                    {preflightLastScannedAt}
+                    scopeFresh={phase1Complete}
+                    {scopeStale}
+                    {stageIntentLine}
+                    on:scopeChange={handleScopeChange}
+                    on:scan={scanScope}
+                  />
+                {/if}
               {:else if selectedPhase === 2}
                 <AlkahestPhaseTwoCard
                   bind:mode
                   bind:targetSessionId
-                  bind:importNodeDraft
+                  decisionRoute={decisionRoute}
+                  modeLocked={importMode}
+                  importPayloadLength={importNodeDraft.trim().length}
                   {loading}
                   {scopeScanning}
                   {phase2Complete}

@@ -1,9 +1,7 @@
 <script lang="ts">
-  import ComposeHeaderSession from './compose/ComposeHeaderSession.svelte';
   import ComposeTabs from './compose/ComposeTabs.svelte';
   import ComposeThread from './compose/ComposeThread.svelte';
   import ComposeInputRow from './compose/ComposeInputRow.svelte';
-  import ComposeFooterActions from './compose/ComposeFooterActions.svelte';
   import ComposeUtilityActions from './compose/ComposeUtilityActions.svelte';
   import ComposeChatSettingsPanel from './compose/ComposeChatSettingsPanel.svelte';
   import ComposeSessionNodesPopover from './compose/ComposeSessionNodesPopover.svelte';
@@ -15,7 +13,6 @@
     ComposeContextSession,
     ComposeInjectedNode,
     ComposeMessage,
-    ComposeMode,
     ComposeProviderUsage,
     ComposeResult,
     ComposeTabInfo,
@@ -24,7 +21,6 @@
   } from './compose/types';
 
   export let open = false;
-  export let mode: ComposeMode = 'live';
   export let sessionId = '';
   export let draft = '';
   export let messages: ComposeMessage[] = [];
@@ -86,7 +82,6 @@
   export let copyComposeEncodePrompt: () => Promise<void> | void = () => {};
   export let toggleComposePasteNode: () => void = () => {};
   export let clearComposeConversation: () => void = () => {};
-  export let switchComposeToLive: () => void = () => {};
   export let saveComposePastedNode: () => Promise<void> | void = () => {};
   export let submitCompose: () => Promise<void> | void = () => {};
   export let clearCrossSessionRoutingPreference: () => void = () => {};
@@ -132,11 +127,11 @@
   $: pastePreviewSource = pastePrettyView ? prettifySttpVisual(pasteNodeDraft) : pasteNodeDraft;
   $: pasteNodePreviewHtml = renderPasteNodePreview(pastePreviewSource);
 
-  $: if (pasteNodeOpen || mode === 'importare') {
+  $: if (pasteNodeOpen) {
     queueMicrotask(syncPasteEditorScroll);
   }
 
-  $: if (!open || mode !== 'live') {
+  $: if (!open) {
     contextPopupOpen = false;
     chatSettingsOpen = false;
     liveToolsOpen = false;
@@ -144,7 +139,7 @@
   }
 
   $: {
-    if (mode === 'live' && pasteNodeOpen && !previousPasteNodeOpen) {
+    if (pasteNodeOpen && !previousPasteNodeOpen) {
       liveToolsOpen = true;
     }
 
@@ -152,10 +147,10 @@
   }
 
   $: {
-    const nextAutoScrollKey = `${open ? '1' : '0'}|${mode}|${messages.length}|${replyLoading ? '1' : '0'}`;
+    const nextAutoScrollKey = `${open ? '1' : '0'}|${messages.length}|${replyLoading ? '1' : '0'}`;
     if (nextAutoScrollKey !== composeAutoScrollKey) {
       composeAutoScrollKey = nextAutoScrollKey;
-      if (open && mode === 'live') {
+      if (open) {
         queueMicrotask(() => {
           if (composeThreadEl) {
             composeThreadEl.scrollTop = composeThreadEl.scrollHeight;
@@ -408,226 +403,174 @@
 <svelte:window on:pointerdown={handleWindowPointerDown} />
 
 {#if open}
-  <div class="drawer drawer-compose" class:importare={mode === 'importare'} role="dialog" aria-label={mode === 'importare' ? 'Import node' : 'Live chat'}>
-    {#if mode === 'live'}
-      <div class="compose-live-shell" bind:this={liveShellEl}>
-        <div class="compose-live-stars" aria-hidden="true"></div>
+  <div class="drawer drawer-compose" role="dialog" aria-label="Live chat">
+    <div class="compose-live-shell" bind:this={liveShellEl}>
+      <div class="compose-live-stars" aria-hidden="true"></div>
 
-        <aside class="compose-session-rail" class:open={contextPopupOpen} aria-label="thread sessions">
-          <p class="compose-rail-label">sessions</p>
-          {#if contextSessions.length > 0}
-            {#each contextSessions as session}
-              <button
-                class="compose-session-chip"
-                class:active={contextBrowseSessionId === session.sessionId}
-                class:origin={contextOriginSessionId === session.sessionId}
-                on:click={(event) => handleSessionChipClick(session, event)}
-              >
-                {session.label}
-              </button>
-            {/each}
-          {:else}
-            <p class="compose-session-empty">no linked sessions yet</p>
-          {/if}
-        </aside>
-
-        <div class="compose-chat-col">
-          <div class="compose-chat-header">
-            <button class="compose-rail-toggle" type="button" aria-expanded={contextPopupOpen} on:click={toggleContextPopup} title="session context">
-              <span></span>
-              <span></span>
-              <span></span>
-            </button>
-
-            <ComposeTabs
-              {tabs}
-              {activeTabId}
-              {maxTabs}
-              {selectComposeTab}
-              {createComposeTab}
-              {closeComposeTab}
-            />
-
+      <aside class="compose-session-rail" class:open={contextPopupOpen} aria-label="thread sessions">
+        <p class="compose-rail-label">sessions</p>
+        {#if contextSessions.length > 0}
+          {#each contextSessions as session}
             <button
-              class="compose-tools-toggle"
-              type="button"
-              aria-expanded={liveToolsOpen}
-              on:click={toggleLiveTools}
-              title="chat tools"
+              class="compose-session-chip"
+              class:active={contextBrowseSessionId === session.sessionId}
+              class:origin={contextOriginSessionId === session.sessionId}
+              on:click={(event) => handleSessionChipClick(session, event)}
             >
-              {liveToolsOpen ? 'hide tools' : 'tools'}
+              {session.label}
             </button>
+          {/each}
+        {:else}
+          <p class="compose-session-empty">no linked sessions yet</p>
+        {/if}
+      </aside>
 
-            <button class="compose-close-btn" type="button" on:click={onClose} aria-label="close chat">x</button>
-          </div>
+      <div class="compose-chat-col">
+        <div class="compose-chat-header">
+          <button class="compose-rail-toggle" type="button" aria-expanded={contextPopupOpen} on:click={toggleContextPopup} title="session context">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
 
-          <div class="compose-session-row">
-            <span class="compose-session-tag">session</span>
-            <input
-              class="compose-session-input"
-              type="text"
-              placeholder="session id"
-              bind:value={sessionId}
-              on:input={onSessionInput}
+          <ComposeTabs
+            {tabs}
+            {activeTabId}
+            {maxTabs}
+            {selectComposeTab}
+            {createComposeTab}
+            {closeComposeTab}
+          />
+
+          <button
+            class="compose-tools-toggle"
+            type="button"
+            aria-expanded={liveToolsOpen}
+            on:click={toggleLiveTools}
+            title="chat tools"
+          >
+            {liveToolsOpen ? 'hide tools' : 'tools'}
+          </button>
+
+          <button class="compose-close-btn" type="button" on:click={onClose} aria-label="close chat">x</button>
+        </div>
+
+        <div class="compose-session-row">
+          <span class="compose-session-tag">session</span>
+          <input
+            class="compose-session-input"
+            type="text"
+            placeholder="session id"
+            bind:value={sessionId}
+            on:input={onSessionInput}
+          />
+        </div>
+
+        <ComposeThread {messages} {replyLoading} bind:threadEl={composeThreadEl} />
+
+        <div class="compose-input-zone">
+          <ComposeInputRow
+            bind:draft
+            {sessionId}
+            {loading}
+            {replyLoading}
+            {onDraftInput}
+            {sendComposeMessage}
+          />
+
+          <ComposeBottomTracker
+            {sessionId}
+            {tokenUsage}
+            {providerUsage}
+            {calibrationAvec}
+            {autoEncodeEnabled}
+            {autoEncodeThresholdPercent}
+          />
+        </div>
+
+        {#if contextPopupOpen && sessionNodesPopoverOpen}
+          <div class="compose-session-nodes-popover-wrap" style={`top: ${sessionNodesPopoverTop}px;`}>
+            <ComposeSessionNodesPopover
+              sessionId={contextBrowseSessionId}
+              {contextNodes}
+              {contextNodesLoading}
+              {contextNodesError}
+              {injectedNodes}
+              {injectContextNode}
+              {removeInjectedNode}
+              bind:popoverEl={sessionNodesPopoverEl}
             />
           </div>
+        {/if}
 
-          <ComposeThread {messages} {replyLoading} bind:threadEl={composeThreadEl} />
-
-          <div class="compose-input-zone">
-            <ComposeInputRow
-              bind:draft
-              {sessionId}
+        {#if liveToolsOpen}
+          <div class="compose-live-tools-wrap">
+            <ComposeUtilityActions
               {loading}
               {replyLoading}
-              {onDraftInput}
-              {sendComposeMessage}
+              {promptCopyLoading}
+              {promptCopied}
+              {pasteNodeOpen}
+              {pasteNodeLoading}
+              {contextPopupOpen}
+              {chatSettingsOpen}
+              {crossSessionRoutingPreference}
+              {copyComposeEncodePrompt}
+              {toggleComposePasteNode}
+              {toggleContextPopup}
+              {clearComposeConversation}
+              {toggleChatSettingsPopup}
+              {clearCrossSessionRoutingPreference}
+              compact={true}
             />
 
-            <ComposeBottomTracker
-              {mode}
-              {sessionId}
-              {tokenUsage}
-              {providerUsage}
-              {calibrationAvec}
-              {autoEncodeEnabled}
-              {autoEncodeThresholdPercent}
-            />
-          </div>
-
-          {#if contextPopupOpen && sessionNodesPopoverOpen}
-            <div class="compose-session-nodes-popover-wrap" style={`top: ${sessionNodesPopoverTop}px;`}>
-              <ComposeSessionNodesPopover
-                sessionId={contextBrowseSessionId}
-                {contextNodes}
-                {contextNodesLoading}
-                {contextNodesError}
-                {injectedNodes}
-                {injectContextNode}
-                {removeInjectedNode}
-                bind:popoverEl={sessionNodesPopoverEl}
-              />
-            </div>
-          {/if}
-
-          {#if liveToolsOpen}
-            <div class="compose-live-tools-wrap">
-              <ComposeUtilityActions
-                {mode}
+            {#if chatSettingsOpen}
+              <ComposeChatSettingsPanel
+                {autoEncodeEnabled}
+                {autoEncodeThresholdPercent}
                 {loading}
                 {replyLoading}
-                {promptCopyLoading}
-                {promptCopied}
-                {pasteNodeOpen}
-                {pasteNodeLoading}
-                {contextPopupOpen}
-                {chatSettingsOpen}
-                {crossSessionRoutingPreference}
-                {copyComposeEncodePrompt}
-                {toggleComposePasteNode}
-                {toggleContextPopup}
-                {clearComposeConversation}
-                {toggleChatSettingsPopup}
-                {clearCrossSessionRoutingPreference}
-                {switchComposeToLive}
-                compact={true}
+                {setAutoEncodeEnabled}
+                {setAutoEncodeThresholdPercent}
               />
+            {/if}
 
-              {#if chatSettingsOpen}
-                <ComposeChatSettingsPanel
-                  {autoEncodeEnabled}
-                  {autoEncodeThresholdPercent}
-                  {loading}
-                  {replyLoading}
-                  {setAutoEncodeEnabled}
-                  {setAutoEncodeThresholdPercent}
-                />
-              {/if}
+            {#if pasteNodeOpen}
+              <ComposePastePanel
+                {sessionId}
+                bind:pasteNodeDraft
+                {pasteNodeLoading}
+                {pastePrettyView}
+                {pasteNodePreviewHtml}
+                bind:pasteInputEl
+                bind:pastePreviewEl
+                {togglePastePrettyView}
+                {syncPasteEditorScroll}
+                {toggleComposePasteNode}
+                {saveComposePastedNode}
+              />
+            {/if}
 
-              {#if pasteNodeOpen}
-                <ComposePastePanel
-                  {mode}
-                  {sessionId}
-                  bind:pasteNodeDraft
-                  {pasteNodeLoading}
-                  {pastePrettyView}
-                  {pasteNodePreviewHtml}
-                  bind:pasteInputEl
-                  bind:pastePreviewEl
-                  {togglePastePrettyView}
-                  {syncPasteEditorScroll}
-                  {toggleComposePasteNode}
-                  {saveComposePastedNode}
-                />
-              {/if}
-
-              <div class="compose-live-tools-actions">
-                <button
-                  class="compose-live-encode-btn"
-                  type="button"
-                  on:click={submitCompose}
-                  disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}
-                >
-                  {loading ? 'encoding…' : 'encode + save + continue'}
-                </button>
-              </div>
+            <div class="compose-live-tools-actions">
+              <button
+                class="compose-live-encode-btn"
+                type="button"
+                on:click={submitCompose}
+                disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}
+              >
+                {loading ? 'encoding…' : 'encode + save + continue'}
+              </button>
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
-    {:else}
-      <ComposeHeaderSession
-        {mode}
-        bind:sessionId
-        {onSessionInput}
-        {onClose}
-      />
-
-      <p class="compose-importare-note">paste one complete node and store it directly.</p>
-
-      <ComposeUtilityActions
-        {mode}
-        {loading}
-        {replyLoading}
-        {promptCopyLoading}
-        {promptCopied}
-        {pasteNodeOpen}
-        {pasteNodeLoading}
-        {contextPopupOpen}
-        {chatSettingsOpen}
-        {crossSessionRoutingPreference}
-        {copyComposeEncodePrompt}
-        {toggleComposePasteNode}
-        {toggleContextPopup}
-        {clearComposeConversation}
-        {toggleChatSettingsPopup}
-        {clearCrossSessionRoutingPreference}
-        {switchComposeToLive}
-      />
-    {/if}
+    </div>
 
     {#if promptCopyError}
       <p class="drawer-error">copy failed: {promptCopyError}</p>
     {/if}
 
-    {#if mode === 'importare'}
-      <ComposePastePanel
-        {mode}
-        {sessionId}
-        bind:pasteNodeDraft
-        {pasteNodeLoading}
-        {pastePrettyView}
-        {pasteNodePreviewHtml}
-        bind:pasteInputEl
-        bind:pastePreviewEl
-        {togglePastePrettyView}
-        {syncPasteEditorScroll}
-        {toggleComposePasteNode}
-        {saveComposePastedNode}
-      />
-    {/if}
-
-    {#if mode === 'live' && loading && encodePromptSent}
+    {#if loading && encodePromptSent}
       <p class="drawer-success compose-encode-note">encoding prompt sent</p>
     {/if}
     {#if error}<p class="drawer-error">{error}</p>{/if}
@@ -637,17 +580,6 @@
       </p>
     {/if}
 
-    {#if mode === 'importare'}
-      <ComposeFooterActions
-        {mode}
-        {loading}
-        {replyLoading}
-        messagesCount={messages.length}
-        {sessionId}
-        {onClose}
-        {submitCompose}
-      />
-    {/if}
   </div>
 {/if}
 
@@ -657,22 +589,22 @@
   }
 
   .drawer {
-    position: absolute;
-    top: max(64px, calc(var(--safe-top) + 46px));
-    bottom: auto;
+    position: fixed;
+    top: max(52px, calc(var(--safe-top) + 10px));
+    bottom: max(10px, calc(var(--safe-bottom) + 10px));
     left: 50%;
     transform: translateX(-50%);
     box-sizing: border-box;
-    width: min(880px, calc(100vw - 24px));
-    height: min(74dvh, 720px);
-    max-height: min(74dvh, 720px);
-    overflow-y: auto;
+    width: min(1460px, calc(100vw - 20px));
+    height: auto;
+    max-height: none;
+    overflow-y: hidden;
     overflow-x: hidden;
     background: rgba(11, 15, 21, 0.97);
     border: 0.5px solid rgba(255, 255, 255, 0.08);
-    border-radius: 14px;
+    border-radius: 18px;
     padding: 0;
-    z-index: 20;
+    z-index: 172;
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     font-family: 'IBM Plex Sans', sans-serif;
@@ -689,27 +621,17 @@
     overflow-x: hidden;
   }
 
-  .drawer-compose:not(.importare) {
-    top: max(56px, calc(var(--safe-top) + 18px));
-    bottom: max(16px, calc(var(--safe-bottom) + 14px));
+  .drawer-compose {
+    top: max(52px, calc(var(--safe-top) + 10px));
+    bottom: max(10px, calc(var(--safe-bottom) + 10px));
     left: 50%;
     right: auto;
     transform: translateX(-50%);
-    width: min(1280px, calc(100vw - 28px));
+    width: min(1460px, calc(100vw - 20px));
     height: auto;
     max-height: none;
-    border-radius: 16px;
+    border-radius: 18px;
     overflow: hidden;
-  }
-
-  .drawer-compose.importare {
-    --compose-paste-height: 224px;
-    width: min(520px, calc(100vw - 24px));
-    height: auto;
-    max-height: min(620px, calc(100dvh - 160px));
-    padding: 14px;
-    gap: 6px;
-    overflow-y: auto;
   }
 
   .compose-live-shell {
@@ -1045,15 +967,6 @@
     cursor: not-allowed;
   }
 
-  .compose-importare-note {
-    margin: 0 0 8px;
-    font-size: 10px;
-    line-height: 1.45;
-    letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.44);
-    text-transform: lowercase;
-  }
-
   .compose-encode-note {
     margin: 8px 14px 0;
     opacity: 0.85;
@@ -1075,31 +988,25 @@
 
   @media (max-width: 520px) {
     .drawer {
-      top: calc(var(--safe-top) + 56px);
+      top: calc(var(--safe-top) + 8px);
       width: calc(100vw - 20px);
-      height: min(78svh, 640px);
-      max-height: min(78svh, 640px);
+      height: auto;
+      max-height: none;
+      bottom: max(8px, calc(var(--safe-bottom) + 8px));
       border-color: rgba(214, 233, 251, 0.2);
       background: rgba(8, 12, 18, 0.985);
       box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
     }
 
-    .drawer-compose:not(.importare) {
-      top: calc(var(--safe-top) + 10px);
+    .drawer-compose {
+      top: calc(var(--safe-top) + 8px);
       right: 10px;
-      bottom: max(10px, calc(var(--safe-bottom) + 10px));
+      bottom: max(8px, calc(var(--safe-bottom) + 8px));
       left: 10px;
       width: auto;
       height: auto;
       max-height: none;
-      border-radius: 14px;
-    }
-
-    .drawer-compose.importare {
-      width: calc(100vw - 20px);
-      height: auto;
-      max-height: min(76svh, 620px);
-      padding: 10px;
+      border-radius: 16px;
     }
 
     .compose-session-rail.open {

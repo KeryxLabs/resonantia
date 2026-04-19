@@ -1,12 +1,14 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
 
-  export let activePhase = 1;
-  export let selectedPhase = 1;
+  export let activePhase = 0;
+  export let selectedPhase = 0;
   export let completionPct = 0;
+  export let phase0Complete = false;
   export let phase1Complete = false;
   export let phase2Complete = false;
   export let phase3Complete = false;
+  export let phase1Unlocked = false;
   export let phase2Unlocked = false;
   export let phase3Unlocked = false;
 
@@ -23,15 +25,20 @@
 <section class="tracker" aria-label="ritual progression">
   <div class="tracker-head">
     <span>ritual arc</span>
-    <small>step {activePhase} of 3 - {completionPct}%</small>
+    <small>step {activePhase + 1} of 4 - {completionPct}%</small>
   </div>
   <div class="tracker-bar" aria-hidden="true">
     <i style={`width:${completionPct}%`}></i>
   </div>
   <ol class="tracker-steps">
-    <li class:active={selectedPhase === 1} class:complete={phase1Complete}>
-      <button class="tracker-step-btn" type="button" on:click={() => selectPhase(1, true)}>
-        stabilize waveform
+    <li class:active={selectedPhase === 0} class:complete={phase0Complete}>
+      <button class="tracker-step-btn" type="button" on:click={() => selectPhase(0, true)}>
+        choose route
+      </button>
+    </li>
+    <li class:active={selectedPhase === 1} class:complete={phase1Complete} class:locked={!phase1Unlocked}>
+      <button class="tracker-step-btn" type="button" disabled={!phase1Unlocked} on:click={() => selectPhase(1, phase1Unlocked)}>
+        prepare feedstock
       </button>
     </li>
     <li class:active={selectedPhase === 2} class:complete={phase2Complete} class:locked={!phase2Unlocked}>
@@ -97,7 +104,7 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
 
@@ -110,14 +117,18 @@
   }
 
   .tracker-steps li:nth-child(1) {
-    --step-rgb: 127, 194, 248;
+    --step-rgb: 126, 172, 242;
   }
 
   .tracker-steps li:nth-child(2) {
-    --step-rgb: 147, 230, 187;
+    --step-rgb: 127, 194, 248;
   }
 
   .tracker-steps li:nth-child(3) {
+    --step-rgb: 147, 230, 187;
+  }
+
+  .tracker-steps li:nth-child(4) {
     --step-rgb: 230, 200, 82;
   }
 

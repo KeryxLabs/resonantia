@@ -20,7 +20,7 @@
     'checkin',
     'telescope',
     'alkahest',
-    'importare',
+    'import',
     'live',
   ];
 
@@ -45,10 +45,10 @@
       summary: 'Enter Alkahest to distill memory into a clearer node or exportable artifact.',
       detail: 'Launch Alkahest -> view the chamber open -> press Next.',
     },
-    importare: {
+    import: {
       title: 'set alkahest import mode',
       summary: 'Use Alkahest import mode to bring in external STTP material and store it directly.',
-      detail: 'In Alkahest phase 02, choose import mode -> review the import fields -> press Next.',
+      detail: 'In Alkahest phase 00 choose import -> confirm phase 01 import prep appears -> press Next.',
     },
     live: {
       title: 'switch to create live',
