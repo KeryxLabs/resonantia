@@ -100,6 +100,7 @@ export type ComposeLiveUiProps = {
   tokenUsage: ComposeTokenUsage;
   providerUsage: ComposeProviderUsage;
   calibrationAvec: ComposeCalibrationAvec;
+  submitCompose: (mode?: 'save' | 'compact') => Promise<void> | void;
   autoEncodeEnabled: boolean;
   autoEncodeThresholdPercent: number;
   setAutoEncodeEnabled: (enabled: boolean) => void;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import ComposeTabs from './compose/ComposeTabs.svelte';
   import ComposeThread from './compose/ComposeThread.svelte';
   import ComposeInputRow from './compose/ComposeInputRow.svelte';
@@ -83,7 +84,7 @@
   export let toggleComposePasteNode: () => void = () => {};
   export let clearComposeConversation: () => void = () => {};
   export let saveComposePastedNode: () => Promise<void> | void = () => {};
-  export let submitCompose: () => Promise<void> | void = () => {};
+  export let submitCompose: (mode?: 'save' | 'compact') => Promise<void> | void = () => {};
   export let clearCrossSessionRoutingPreference: () => void = () => {};
   export let setAutoEncodeEnabled: (enabled: boolean) => void = () => {};
   export let setAutoEncodeThresholdPercent: (thresholdPercent: number) => void = () => {};
@@ -97,6 +98,8 @@
   let pasteInputEl: HTMLTextAreaElement | null = null;
   let pastePreviewEl: HTMLDivElement | null = null;
   let composeThreadEl: HTMLDivElement | null = null;
+  let toolsToggleEl: HTMLButtonElement | null = null;
+  let liveToolsPopoverEl: HTMLDivElement | null = null;
   let pastePrettyView = false;
   let composeAutoScrollKey = '';
   let contextPopupOpen = false;
@@ -107,6 +110,16 @@
   let previousPasteNodeOpen = false;
   let liveShellEl: HTMLDivElement | null = null;
   let sessionNodesPopoverEl: HTMLDivElement | null = null;
+  let starCanvasEl: HTMLCanvasElement | null = null;
+  let observedStarCanvasEl: HTMLCanvasElement | null = null;
+  let starResizeObserver: ResizeObserver | null = null;
+  let starDrawRaf = 0;
+  let renderDrawer = false;
+  let layerState: 'closed' | 'opening' | 'open' | 'closing' = 'closed';
+  let layerCloseTimeout: ReturnType<typeof setTimeout> | null = null;
+  let layerOpenRaf = 0;
+
+  const COMPOSE_LAYER_TRANSITION_MS = 420;
 
   const STTP_KEYWORDS = new Set([
     'manual',
@@ -129,6 +142,50 @@
 
   $: if (pasteNodeOpen) {
     queueMicrotask(syncPasteEditorScroll);
+  }
+
+  $: {
+    if (open) {
+      clearLayerCloseTimeout();
+
+      if (!renderDrawer || layerState === 'closing' || layerState === 'closed') {
+        renderDrawer = true;
+        layerState = 'opening';
+        queueLayerOpenState();
+      }
+    } else if (renderDrawer && layerState !== 'closing') {
+      cancelLayerOpenState();
+      layerState = 'closing';
+      layerCloseTimeout = setTimeout(() => {
+        renderDrawer = false;
+        layerState = 'closed';
+        layerCloseTimeout = null;
+      }, COMPOSE_LAYER_TRANSITION_MS);
+    }
+  }
+
+  $: {
+    if (starCanvasEl !== observedStarCanvasEl) {
+      if (starResizeObserver) {
+        starResizeObserver.disconnect();
+        starResizeObserver = null;
+      }
+
+      observedStarCanvasEl = starCanvasEl;
+
+      if (starCanvasEl && typeof ResizeObserver !== 'undefined') {
+        starResizeObserver = new ResizeObserver(() => {
+          scheduleComposeStarfieldDraw();
+        });
+        starResizeObserver.observe(starCanvasEl);
+      }
+
+      scheduleComposeStarfieldDraw();
+    }
+  }
+
+  $: if (renderDrawer && starCanvasEl) {
+    scheduleComposeStarfieldDraw();
   }
 
   $: if (!open) {
@@ -208,25 +265,171 @@
   }
 
   function handleWindowPointerDown(event: PointerEvent) {
-    if (!sessionNodesPopoverOpen) {
-      return;
-    }
-
     const target = event.target;
     if (!(target instanceof Node)) {
       return;
     }
 
-    if (sessionNodesPopoverEl?.contains(target)) {
-      return;
+    if (sessionNodesPopoverOpen) {
+      if (sessionNodesPopoverEl?.contains(target)) {
+        return;
+      }
+
+      if (target instanceof Element && target.closest('.compose-session-chip')) {
+        return;
+      }
+
+      sessionNodesPopoverOpen = false;
     }
 
-    if (target instanceof Element && target.closest('.compose-session-chip')) {
-      return;
-    }
+    if (liveToolsOpen) {
+      if (liveToolsPopoverEl?.contains(target) || toolsToggleEl?.contains(target)) {
+        return;
+      }
 
-    sessionNodesPopoverOpen = false;
+      liveToolsOpen = false;
+      chatSettingsOpen = false;
+    }
   }
+
+  function cancelLayerOpenState() {
+    if (layerOpenRaf) {
+      cancelAnimationFrame(layerOpenRaf);
+      layerOpenRaf = 0;
+    }
+  }
+
+  function scheduleComposeStarfieldDraw() {
+    if (starDrawRaf) {
+      return;
+    }
+
+    if (typeof requestAnimationFrame !== 'function') {
+      drawComposeStarfield();
+      return;
+    }
+
+    starDrawRaf = requestAnimationFrame(() => {
+      starDrawRaf = 0;
+      drawComposeStarfield();
+    });
+  }
+
+  function drawComposeStarfield() {
+    if (!starCanvasEl) {
+      return;
+    }
+
+    const rect = starCanvasEl.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(rect.width));
+    const height = Math.max(1, Math.floor(rect.height));
+    const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+    const canvasWidth = Math.max(1, Math.floor(width * dpr));
+    const canvasHeight = Math.max(1, Math.floor(height * dpr));
+
+    if (starCanvasEl.width !== canvasWidth || starCanvasEl.height !== canvasHeight) {
+      starCanvasEl.width = canvasWidth;
+      starCanvasEl.height = canvasHeight;
+    }
+
+    const ctx = starCanvasEl.getContext('2d');
+    if (!ctx) {
+      return;
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const nodes = [
+      { x: 0.12, y: 0.15, r: 28, core: 3 },
+      { x: 0.85, y: 0.1, r: 20, core: 2.5 },
+      { x: 0.9, y: 0.75, r: 38, core: 4 },
+      { x: 0.08, y: 0.7, r: 18, core: 2 },
+      { x: 0.5, y: 0.08, r: 14, core: 2 },
+      { x: 0.75, y: 0.5, r: 22, core: 2.5 },
+      { x: 0.22, y: 0.88, r: 16, core: 2 },
+      { x: 0.6, y: 0.85, r: 12, core: 1.5 },
+    ];
+
+    for (const node of nodes) {
+      const x = node.x * width;
+      const y = node.y * height;
+
+      ctx.beginPath();
+      ctx.arc(x, y, node.r, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(100, 190, 170, 0.07)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(x, y, node.r * 0.35, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(100, 190, 170, 0.06)';
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(x, y, node.core, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(100, 190, 170, 0.22)';
+      ctx.fill();
+    }
+
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const distance = Math.hypot((a.x - b.x) * width, (a.y - b.y) * height);
+
+        if (distance >= 340) {
+          continue;
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(a.x * width, a.y * height);
+        ctx.lineTo(b.x * width, b.y * height);
+        ctx.strokeStyle = `rgba(100, 190, 170, ${0.025 * (1 - (distance / 340))})`;
+        ctx.lineWidth = 0.4;
+        ctx.stroke();
+      }
+    }
+  }
+
+  function clearLayerCloseTimeout() {
+    if (layerCloseTimeout) {
+      clearTimeout(layerCloseTimeout);
+      layerCloseTimeout = null;
+    }
+  }
+
+  function queueLayerOpenState() {
+    cancelLayerOpenState();
+
+    if (typeof requestAnimationFrame !== 'function') {
+      layerState = 'open';
+      return;
+    }
+
+    layerOpenRaf = requestAnimationFrame(() => {
+      layerOpenRaf = requestAnimationFrame(() => {
+        layerState = 'open';
+        layerOpenRaf = 0;
+      });
+    });
+  }
+
+  onDestroy(() => {
+    cancelLayerOpenState();
+    clearLayerCloseTimeout();
+
+    if (starResizeObserver) {
+      starResizeObserver.disconnect();
+      starResizeObserver = null;
+    }
+
+    if (starDrawRaf && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(starDrawRaf);
+      starDrawRaf = 0;
+    }
+  });
 
   function toggleContextPopup() {
     contextPopupOpen = !contextPopupOpen;
@@ -402,10 +605,17 @@
 
 <svelte:window on:pointerdown={handleWindowPointerDown} />
 
-{#if open}
-  <div class="drawer drawer-compose" role="dialog" aria-label="Live chat">
+{#if renderDrawer}
+  <div
+    class="compose-immersive-root"
+    class:is-opening={layerState === 'opening'}
+    class:is-open={layerState === 'open'}
+    class:is-closing={layerState === 'closing'}
+  >
+    <div class="compose-immersive-scrim" aria-hidden="true"></div>
+    <div class="drawer drawer-compose" role="dialog" aria-label="Live chat" aria-modal="true">
     <div class="compose-live-shell" bind:this={liveShellEl}>
-      <div class="compose-live-stars" aria-hidden="true"></div>
+      <canvas class="compose-live-stars" bind:this={starCanvasEl} aria-hidden="true"></canvas>
 
       <aside class="compose-session-rail" class:open={contextPopupOpen} aria-label="thread sessions">
         <p class="compose-rail-label">sessions</p>
@@ -446,6 +656,7 @@
             class="compose-tools-toggle"
             type="button"
             aria-expanded={liveToolsOpen}
+            bind:this={toolsToggleEl}
             on:click={toggleLiveTools}
             title="chat tools"
           >
@@ -454,6 +665,80 @@
 
           <button class="compose-close-btn" type="button" on:click={onClose} aria-label="close chat">x</button>
         </div>
+
+        {#if liveToolsOpen}
+          <div class="compose-live-tools-popover">
+            <div class="compose-live-tools-wrap" bind:this={liveToolsPopoverEl}>
+              <ComposeUtilityActions
+                {loading}
+                {replyLoading}
+                {promptCopyLoading}
+                {promptCopied}
+                {pasteNodeOpen}
+                {pasteNodeLoading}
+                {contextPopupOpen}
+                {chatSettingsOpen}
+                {crossSessionRoutingPreference}
+                {copyComposeEncodePrompt}
+                {toggleComposePasteNode}
+                {toggleContextPopup}
+                {clearComposeConversation}
+                {toggleChatSettingsPopup}
+                {clearCrossSessionRoutingPreference}
+                compact={true}
+              />
+
+              {#if chatSettingsOpen}
+                <ComposeChatSettingsPanel
+                  {autoEncodeEnabled}
+                  {autoEncodeThresholdPercent}
+                  {loading}
+                  {replyLoading}
+                  {setAutoEncodeEnabled}
+                  {setAutoEncodeThresholdPercent}
+                />
+              {/if}
+
+              {#if pasteNodeOpen}
+                <ComposePastePanel
+                  {sessionId}
+                  bind:pasteNodeDraft
+                  {pasteNodeLoading}
+                  {pastePrettyView}
+                  {pasteNodePreviewHtml}
+                  bind:pasteInputEl
+                  bind:pastePreviewEl
+                  {togglePastePrettyView}
+                  {syncPasteEditorScroll}
+                  {toggleComposePasteNode}
+                  {saveComposePastedNode}
+                />
+              {/if}
+
+              <div class="compose-live-tools-actions">
+                <div class="compose-live-mode-grid">
+                  <button
+                    class="compose-live-mode-btn compose-live-mode-save"
+                    type="button"
+                    on:click={() => void submitCompose('save')}
+                    disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}
+                  >
+                    {loading ? 'encoding…' : 'save'}
+                  </button>
+                  <button
+                    class="compose-live-mode-btn compose-live-mode-compact"
+                    type="button"
+                    on:click={() => void submitCompose('compact')}
+                    disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}
+                  >
+                    {loading ? 'encoding…' : 'compact'}
+                  </button>
+                </div>
+                <p class="compose-live-tools-hint">save stores a node; compact stores, clears this thread, and reinjects the compacted node.</p>
+              </div>
+            </div>
+          </div>
+        {/if}
 
         <div class="compose-session-row">
           <span class="compose-session-tag">session</span>
@@ -502,67 +787,6 @@
             />
           </div>
         {/if}
-
-        {#if liveToolsOpen}
-          <div class="compose-live-tools-wrap">
-            <ComposeUtilityActions
-              {loading}
-              {replyLoading}
-              {promptCopyLoading}
-              {promptCopied}
-              {pasteNodeOpen}
-              {pasteNodeLoading}
-              {contextPopupOpen}
-              {chatSettingsOpen}
-              {crossSessionRoutingPreference}
-              {copyComposeEncodePrompt}
-              {toggleComposePasteNode}
-              {toggleContextPopup}
-              {clearComposeConversation}
-              {toggleChatSettingsPopup}
-              {clearCrossSessionRoutingPreference}
-              compact={true}
-            />
-
-            {#if chatSettingsOpen}
-              <ComposeChatSettingsPanel
-                {autoEncodeEnabled}
-                {autoEncodeThresholdPercent}
-                {loading}
-                {replyLoading}
-                {setAutoEncodeEnabled}
-                {setAutoEncodeThresholdPercent}
-              />
-            {/if}
-
-            {#if pasteNodeOpen}
-              <ComposePastePanel
-                {sessionId}
-                bind:pasteNodeDraft
-                {pasteNodeLoading}
-                {pastePrettyView}
-                {pasteNodePreviewHtml}
-                bind:pasteInputEl
-                bind:pastePreviewEl
-                {togglePastePrettyView}
-                {syncPasteEditorScroll}
-                {toggleComposePasteNode}
-                {saveComposePastedNode}
-              />
-            {/if}
-
-            <div class="compose-live-tools-actions">
-              <button
-                class="compose-live-encode-btn"
-                type="button"
-                on:click={submitCompose}
-                disabled={loading || replyLoading || messages.length === 0 || !sessionId.trim()}
-              >
-                {loading ? 'encoding…' : 'encode + save + continue'}
-              </button>
-            </div>
-          </div>
-        {/if}
       </div>
     </div>
 
@@ -580,37 +804,101 @@
       </p>
     {/if}
 
+    </div>
   </div>
 {/if}
 
 <style>
+  .compose-immersive-root {
+    position: fixed;
+    inset: 0;
+    z-index: 172;
+    isolation: isolate;
+    overflow: hidden;
+  }
+
+  .compose-immersive-scrim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    background:
+      linear-gradient(180deg, rgba(3, 7, 12, 0.16) 0%, rgba(3, 7, 12, 0.62) 100%);
+    transition: opacity 420ms cubic-bezier(0.18, 0.8, 0.18, 1);
+  }
+
+  .compose-immersive-scrim::before {
+    content: '';
+    position: absolute;
+    inset: -8% -10% -14%;
+    background:
+      radial-gradient(ellipse at 50% 114%, rgba(102, 154, 185, 0.18) 0%, rgba(102, 154, 185, 0) 58%),
+      radial-gradient(ellipse at 16% 114%, rgba(78, 128, 156, 0.12) 0%, rgba(78, 128, 156, 0) 48%),
+      radial-gradient(ellipse at 84% 114%, rgba(78, 128, 156, 0.1) 0%, rgba(78, 128, 156, 0) 46%);
+    opacity: 0.4;
+  }
+
+  .compose-immersive-scrim::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(6, 10, 16, 0.22) 0%, rgba(6, 10, 16, 0) 24%, rgba(6, 10, 16, 0) 72%, rgba(6, 10, 16, 0.24) 100%),
+      linear-gradient(90deg, rgba(6, 10, 16, 0.2) 0%, rgba(6, 10, 16, 0) 14%, rgba(6, 10, 16, 0) 86%, rgba(6, 10, 16, 0.2) 100%);
+    opacity: 0.62;
+  }
+
+  .compose-immersive-root .drawer {
+    opacity: 0;
+    transform: translateY(26px) scale(0.988);
+    transition:
+      opacity 420ms cubic-bezier(0.18, 0.8, 0.18, 1),
+      transform 420ms cubic-bezier(0.18, 0.8, 0.18, 1);
+  }
+
+  .compose-immersive-root.is-open .drawer,
+  .compose-immersive-root.is-opening .drawer {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  .compose-immersive-root.is-open .compose-immersive-scrim,
+  .compose-immersive-root.is-opening .compose-immersive-scrim {
+    opacity: 1;
+  }
+
+  .compose-immersive-root.is-closing .drawer {
+    opacity: 0;
+    transform: translateY(18px) scale(0.992);
+  }
+
+  .compose-immersive-root.is-closing .compose-immersive-scrim {
+    opacity: 0;
+  }
+
   .drawer-compose {
     --compose-paste-height: 184px;
   }
 
   .drawer {
-    position: fixed;
-    top: max(52px, calc(var(--safe-top) + 10px));
-    bottom: max(10px, calc(var(--safe-bottom) + 10px));
-    left: 50%;
-    transform: translateX(-50%);
+    position: absolute;
+    top: max(0px, var(--safe-top, 0px));
+    right: 0;
+    bottom: max(0px, var(--safe-bottom, 0px));
+    left: 0;
     box-sizing: border-box;
-    width: min(1460px, calc(100vw - 20px));
+    width: auto;
     height: auto;
     max-height: none;
-    overflow-y: hidden;
-    overflow-x: hidden;
-    background: rgba(11, 15, 21, 0.97);
-    border: 0.5px solid rgba(255, 255, 255, 0.08);
-    border-radius: 18px;
+    overflow: hidden;
+    background: transparent;
+    border: none;
+    border-radius: 0;
     padding: 0;
-    z-index: 172;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    z-index: 1;
     font-family: 'IBM Plex Sans', sans-serif;
     overscroll-behavior: contain;
     scrollbar-width: thin;
-    box-shadow: 0 22px 54px rgba(2, 7, 14, 0.55);
   }
 
   .drawer-compose {
@@ -621,19 +909,6 @@
     overflow-x: hidden;
   }
 
-  .drawer-compose {
-    top: max(52px, calc(var(--safe-top) + 10px));
-    bottom: max(10px, calc(var(--safe-bottom) + 10px));
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
-    width: min(1460px, calc(100vw - 20px));
-    height: auto;
-    max-height: none;
-    border-radius: 18px;
-    overflow: hidden;
-  }
-
   .compose-live-shell {
     position: relative;
     min-height: 0;
@@ -641,11 +916,10 @@
     flex: 1;
     display: flex;
     overflow: hidden;
-    border-radius: 14px;
-    background:
-      radial-gradient(ellipse at 50% 56%, rgba(12, 29, 43, 0.34) 0%, rgba(9, 14, 23, 0.95) 68%),
-      #0b0f15;
+    border-radius: 0;
+    background: #0b0f15;
     isolation: isolate;
+    box-shadow: inset 0 0 0 0.5px rgba(188, 216, 236, 0.12);
   }
 
   .compose-live-shell::before {
@@ -653,9 +927,10 @@
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(ellipse at 50% 52%, rgba(100, 190, 170, 0.08) 0%, rgba(100, 190, 170, 0) 58%),
-      radial-gradient(ellipse at 50% 96%, rgba(100, 160, 220, 0.06) 0%, rgba(100, 160, 220, 0) 64%);
-    opacity: 0.54;
+      radial-gradient(ellipse at 50% 114%, rgba(105, 156, 187, 0.2) 0%, rgba(105, 156, 187, 0) 62%),
+      radial-gradient(ellipse at 18% 114%, rgba(84, 133, 161, 0.12) 0%, rgba(84, 133, 161, 0) 48%),
+      radial-gradient(ellipse at 82% 114%, rgba(84, 133, 161, 0.1) 0%, rgba(84, 133, 161, 0) 46%);
+    opacity: 0.44;
     pointer-events: none;
     z-index: 0;
   }
@@ -665,8 +940,8 @@
     position: absolute;
     inset: 0;
     background:
-      linear-gradient(90deg, rgba(7, 11, 18, 0.32) 0%, rgba(7, 11, 18, 0) 20%, rgba(7, 11, 18, 0) 80%, rgba(7, 11, 18, 0.32) 100%),
-      linear-gradient(180deg, rgba(7, 11, 18, 0.24) 0%, rgba(7, 11, 18, 0) 24%, rgba(7, 11, 18, 0) 72%, rgba(7, 11, 18, 0.36) 100%);
+      linear-gradient(90deg, rgba(7, 11, 18, 0.22) 0%, rgba(7, 11, 18, 0) 18%, rgba(7, 11, 18, 0) 82%, rgba(7, 11, 18, 0.22) 100%),
+      linear-gradient(180deg, rgba(7, 11, 18, 0.2) 0%, rgba(7, 11, 18, 0) 26%, rgba(7, 11, 18, 0) 72%, rgba(7, 11, 18, 0.28) 100%);
     pointer-events: none;
     z-index: 0;
   }
@@ -675,12 +950,10 @@
     pointer-events: none;
     position: absolute;
     inset: 0;
-    background:
-      radial-gradient(circle at 16% 18%, rgba(100, 190, 170, 0.1) 0, rgba(100, 190, 170, 0) 32%),
-      radial-gradient(circle at 80% 12%, rgba(100, 190, 170, 0.08) 0, rgba(100, 190, 170, 0) 26%),
-      radial-gradient(circle at 88% 76%, rgba(100, 190, 170, 0.08) 0, rgba(100, 190, 170, 0) 34%),
-      radial-gradient(circle at 12% 74%, rgba(100, 190, 170, 0.07) 0, rgba(100, 190, 170, 0) 28%);
-    opacity: 0.42;
+    width: 100%;
+    height: 100%;
+    display: block;
+    opacity: 0.55;
     animation: composeStarFieldFloat 28s ease-in-out infinite alternate;
     z-index: 0;
   }
@@ -688,11 +961,9 @@
   @keyframes composeStarFieldFloat {
     from {
       transform: scale(1) translateY(0);
-      opacity: 0.38;
     }
     to {
-      transform: scale(1.01) translateY(-2px);
-      opacity: 0.46;
+      transform: scale(1.008) translateY(-1px);
     }
   }
 
@@ -923,48 +1194,91 @@
     pointer-events: auto;
   }
 
+  .compose-live-tools-popover {
+    position: absolute;
+    top: 52px;
+    right: 12px;
+    width: min(360px, calc(100% - 24px));
+    z-index: 14;
+    pointer-events: none;
+  }
+
   .compose-live-tools-wrap {
-    margin: 7px 10px 10px;
+    pointer-events: auto;
     padding: 9px;
-    border-radius: 10px;
-    border: 0.5px solid rgba(138, 176, 208, 0.28);
-    background: linear-gradient(170deg, rgba(28, 43, 61, 0.5), rgba(20, 31, 45, 0.44));
-    box-shadow: inset 0 0 0 1px rgba(108, 143, 173, 0.14);
+    border-radius: 12px;
+    border: 0.5px solid rgba(102, 143, 172, 0.22);
+    background: linear-gradient(170deg, rgba(11, 22, 33, 0.86), rgba(9, 17, 27, 0.9));
+    box-shadow: 0 10px 22px rgba(2, 7, 14, 0.34), inset 0 0 0 1px rgba(76, 116, 145, 0.1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     display: grid;
-    gap: 8px;
+    gap: 7px;
     position: relative;
     z-index: 4;
+    max-height: min(74vh, calc(100% - 80px));
+    overflow-y: auto;
   }
 
   .compose-live-tools-actions {
-    display: flex;
-    justify-content: flex-end;
+    display: grid;
+    gap: 5px;
     padding-top: 2px;
+    border-top: 0.5px solid rgba(114, 150, 178, 0.16);
+    margin-top: 1px;
+    padding-top: 7px;
   }
 
-  .compose-live-encode-btn {
+  .compose-live-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .compose-live-mode-btn {
     border-radius: 999px;
-    border: 0.5px solid rgba(104, 194, 174, 0.3);
-    background: rgba(100, 190, 170, 0.14);
-    color: rgba(190, 236, 226, 0.86);
+    border: 0.5px solid rgba(103, 148, 178, 0.22);
+    background: rgba(39, 64, 83, 0.44);
+    color: rgba(183, 211, 231, 0.8);
     font-family: 'Departure Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.06em;
+    font-size: 8px;
+    letter-spacing: 0.05em;
     text-transform: lowercase;
-    padding: 6px 12px;
+    padding: 6px 10px;
     cursor: pointer;
     transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease, opacity 0.2s ease;
   }
 
-  .compose-live-encode-btn:hover:not(:disabled) {
-    border-color: rgba(130, 214, 195, 0.52);
-    background: rgba(109, 203, 182, 0.24);
-    color: rgba(227, 248, 242, 0.94);
+  .compose-live-mode-save {
+    border-color: rgba(98, 163, 146, 0.26);
+    background: rgba(37, 74, 66, 0.48);
+    color: rgba(178, 220, 206, 0.86);
   }
 
-  .compose-live-encode-btn:disabled {
+  .compose-live-mode-compact {
+    border-color: rgba(110, 151, 184, 0.26);
+    background: rgba(36, 66, 92, 0.48);
+    color: rgba(188, 214, 234, 0.86);
+  }
+
+  .compose-live-mode-btn:hover:not(:disabled) {
+    border-color: rgba(143, 188, 217, 0.38);
+    background: rgba(57, 91, 118, 0.58);
+    color: rgba(214, 234, 248, 0.92);
+  }
+
+  .compose-live-mode-btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+  }
+
+  .compose-live-tools-hint {
+    margin: 0;
+    font-size: 8px;
+    letter-spacing: 0.03em;
+    color: rgba(162, 190, 210, 0.6);
+    text-transform: lowercase;
+    line-height: 1.4;
   }
 
   .compose-encode-note {
@@ -988,25 +1302,8 @@
 
   @media (max-width: 520px) {
     .drawer {
-      top: calc(var(--safe-top) + 8px);
-      width: calc(100vw - 20px);
-      height: auto;
-      max-height: none;
-      bottom: max(8px, calc(var(--safe-bottom) + 8px));
-      border-color: rgba(214, 233, 251, 0.2);
-      background: rgba(8, 12, 18, 0.985);
-      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
-    }
-
-    .drawer-compose {
-      top: calc(var(--safe-top) + 8px);
-      right: 10px;
-      bottom: max(8px, calc(var(--safe-bottom) + 8px));
-      left: 10px;
-      width: auto;
-      height: auto;
-      max-height: none;
-      border-radius: 16px;
+      top: max(0px, var(--safe-top, 0px));
+      bottom: max(0px, var(--safe-bottom, 0px));
     }
 
     .compose-session-rail.open {
@@ -1027,6 +1324,12 @@
       font-size: 8px;
     }
 
+    .compose-live-tools-popover {
+      top: 50px;
+      right: 8px;
+      width: calc(100% - 16px);
+    }
+
     .compose-input-zone {
       padding: 10px 10px 0;
     }
@@ -1037,8 +1340,12 @@
     }
 
     .compose-live-tools-wrap {
-      margin: 6px 8px 9px;
       padding: 8px;
+      max-height: min(70vh, calc(100% - 72px));
+    }
+
+    .compose-live-mode-grid {
+      grid-template-columns: 1fr;
     }
 
     .drawer-error,
@@ -1046,6 +1353,15 @@
     .compose-encode-note {
       margin-left: 10px;
       margin-right: 10px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .compose-immersive-root .drawer,
+    .compose-immersive-scrim,
+    .compose-live-stars {
+      transition: none;
+      animation: none;
     }
   }
 </style>

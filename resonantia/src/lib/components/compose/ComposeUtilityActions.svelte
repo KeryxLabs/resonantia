@@ -87,7 +87,7 @@
 
   .compose-utility-actions.compact {
     margin: 0;
-    gap: 4px;
+    gap: 3px;
   }
 
   .compose-utility-divider {
@@ -99,28 +99,28 @@
 
   .compose-routing-pref {
     font-size: 8px;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     text-transform: lowercase;
-    color: rgba(187, 212, 234, 0.64);
+    color: rgba(162, 190, 210, 0.62);
   }
 
   .compose-link-btn {
-    border: 0.5px solid rgba(126, 173, 198, 0.24);
-    background: rgba(80, 119, 143, 0.09);
-    padding: 4px 8px;
+    border: 0.5px solid rgba(98, 136, 163, 0.25);
+    background: rgba(15, 27, 40, 0.6);
+    padding: 3px 7px;
     margin: 0;
     font-family: 'Departure Mono', monospace;
     font-size: 8px;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.04em;
     text-transform: lowercase;
     border-radius: 999px;
-    color: rgba(191, 223, 242, 0.72);
+    color: rgba(177, 207, 227, 0.78);
     cursor: pointer;
     transition: color 0.2s, border-color 0.2s, background 0.2s, opacity 0.2s;
   }
 
   .compose-utility-actions.compact .compose-link-btn {
-    padding: 4px 7px;
+    padding: 3px 6px;
     font-size: 8px;
     letter-spacing: 0.04em;
   }
@@ -135,57 +135,57 @@
   }
 
   .compose-link-btn:hover:not(:disabled) {
-    color: rgba(224, 240, 249, 0.88);
-    border-color: rgba(141, 192, 223, 0.4);
-    background: rgba(89, 136, 166, 0.15);
+    color: rgba(209, 230, 245, 0.9);
+    border-color: rgba(129, 174, 203, 0.38);
+    background: rgba(38, 67, 89, 0.58);
   }
 
   .compose-link-pill-gold {
-    border-color: rgba(199, 182, 132, 0.34);
-    background: rgba(196, 166, 104, 0.1);
-    color: rgba(229, 214, 182, 0.82);
+    border-color: rgba(172, 151, 109, 0.3);
+    background: rgba(54, 45, 28, 0.64);
+    color: rgba(206, 194, 166, 0.8);
   }
 
   .compose-link-pill-gold:hover:not(:disabled) {
-    color: rgba(247, 235, 210, 0.92);
-    border-color: rgba(215, 191, 136, 0.45);
-    background: rgba(196, 166, 104, 0.16);
+    color: rgba(228, 217, 191, 0.9);
+    border-color: rgba(188, 167, 121, 0.44);
+    background: rgba(70, 57, 34, 0.74);
   }
 
   .compose-link-pill-context {
-    border-color: rgba(143, 184, 220, 0.3);
-    background: rgba(75, 112, 146, 0.14);
-    color: rgba(210, 231, 247, 0.82);
+    border-color: rgba(108, 149, 181, 0.3);
+    background: rgba(28, 49, 68, 0.66);
+    color: rgba(185, 212, 231, 0.82);
   }
 
   .compose-link-pill-context.active {
-    border-color: rgba(184, 217, 245, 0.52);
-    background: rgba(101, 151, 194, 0.24);
-    color: rgba(234, 245, 255, 0.95);
+    border-color: rgba(149, 188, 215, 0.48);
+    background: rgba(53, 90, 121, 0.74);
+    color: rgba(212, 231, 244, 0.9);
   }
 
   .compose-link-pill-settings {
-    border-color: rgba(152, 184, 216, 0.34);
-    background: rgba(83, 117, 148, 0.18);
-    color: rgba(210, 229, 245, 0.86);
+    border-color: rgba(108, 147, 175, 0.3);
+    background: rgba(29, 49, 67, 0.66);
+    color: rgba(185, 211, 230, 0.82);
   }
 
   .compose-link-pill-settings.active {
-    border-color: rgba(186, 216, 241, 0.58);
-    background: rgba(104, 150, 188, 0.26);
-    color: rgba(237, 246, 255, 0.96);
+    border-color: rgba(150, 187, 212, 0.48);
+    background: rgba(55, 91, 120, 0.74);
+    color: rgba(214, 231, 243, 0.9);
   }
 
   .compose-link-pill-routing {
-    border-color: rgba(201, 176, 126, 0.34);
-    background: rgba(166, 133, 80, 0.12);
-    color: rgba(236, 220, 190, 0.84);
+    border-color: rgba(167, 149, 111, 0.3);
+    background: rgba(54, 43, 26, 0.64);
+    color: rgba(205, 195, 171, 0.8);
   }
 
   .compose-link-pill-routing:hover:not(:disabled) {
-    border-color: rgba(224, 198, 141, 0.48);
-    background: rgba(188, 153, 93, 0.2);
-    color: rgba(248, 237, 214, 0.92);
+    border-color: rgba(186, 166, 123, 0.44);
+    background: rgba(71, 57, 34, 0.74);
+    color: rgba(227, 216, 192, 0.88);
   }
 
   .compose-link-btn:disabled {

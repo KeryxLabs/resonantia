@@ -2738,6 +2738,7 @@
   type ComposeContinueTargetMode = 'match-session' | 'active-tab';
   type ComposeContinueRoutingPreference = CrossSessionRoutingPreference;
   type ComposeEncodeSaveOrigin = 'manual' | 'auto';
+  type ComposeEncodeMode = 'save' | 'compact';
   const COMPOSE_AUTO_ENCODE_THRESHOLD_MIN = 60;
   const COMPOSE_AUTO_ENCODE_THRESHOLD_MAX = 85;
   const COMPOSE_AUTO_ENCODE_THRESHOLD_DEFAULT = 72;
@@ -2980,6 +2981,7 @@
       autonomy: calibAutonomy,
       psi: calibrationPsi,
     } as ComposeCalibrationAvec,
+    submitCompose,
     autoEncodeEnabled: composeAutoEncodeEnabled,
     autoEncodeThresholdPercent: composeAutoEncodeThresholdPercent,
     setAutoEncodeEnabled: setComposeAutoEncodeEnabled,
@@ -3294,12 +3296,17 @@
 
   function composeFocusScaleFor(levelValue: number, cameraScale: number) {
     const compact = compactViewport();
+    const minWaveScale = compact ? 1.58 : (mediumViewport() ? 1.9 : 2.05);
 
-    if (levelValue === 1) {
-      return Math.max(compact ? 1.4 : 1.58, Math.min(TELESCOPE_WAVE_SCALE, cameraScale * (compact ? 0.64 : 0.7)));
+    if (levelValue === 2) {
+      return Math.max(minWaveScale, Math.min(WAVE_SCALE, cameraScale * (compact ? 0.3 : 0.34)));
     }
 
-    return Math.max(compact ? 0.84 : 0.92, Math.min(TELESCOPE_CONSTELLATION_SCALE, cameraScale * (compact ? 0.82 : 0.86)));
+    if (levelValue === 1) {
+      return Math.max(minWaveScale, Math.min(WAVE_SCALE, cameraScale * (compact ? 0.9 : 0.94)));
+    }
+
+    return minWaveScale;
   }
 
   function composeFocusTargetFrom(camera: CameraState, levelValue: number) {
@@ -4845,6 +4852,23 @@
     closeComposeContinueChooser();
     snapshotActiveComposeTab();
 
+    // Continue routing should always stage compose from a clean constellation layer.
+    // This prevents collapse/wave overlays from fighting the compose immersive surface.
+    selectedNode = null;
+    selectedSession = null;
+    negativeLayerActive = false;
+    level = 0;
+
+    const constellationX = W() / 2;
+    const constellationY = H() / 2;
+    const constellationScale = constellationLayerScale();
+    camX = constellationX;
+    camY = constellationY;
+    camScale = constellationScale;
+    targetCamX = constellationX;
+    targetCamY = constellationY;
+    targetCamScale = constellationScale;
+
     const targetTabId = resolveContinueTargetTabId(sourceSessionId, targetMode);
     if (!targetTabId) {
       return;
@@ -4896,7 +4920,10 @@
 
     if (composeCameraEngaged) {
       composeOpen = true;
-    } else if (!cameraOverlayEngaged) {
+      if (composePhase === 'exiting') {
+        beginComposeEnterTransition();
+      }
+    } else {
       beginComposeEnterTransition();
     }
     snapshotActiveComposeTab();
@@ -5343,7 +5370,7 @@
     }
   }
 
-  async function encodeSaveAndContinueComposeThread(origin: ComposeEncodeSaveOrigin): Promise<boolean> {
+  async function encodeComposeThread(origin: ComposeEncodeSaveOrigin, mode: ComposeEncodeMode): Promise<boolean> {
     if (composeLoading || composeMessages.length === 0 || composeReplyLoading) {
       return false;
     }
@@ -5410,14 +5437,20 @@
         status,
       };
 
-      if (encodedNode.trim()) {
-        seedComposeInjectedNode(sessionId, encodedNode);
-      }
+      const encodedThreadSignature = composeAutoEncodeSignature();
 
-      composeMessages = [];
-      composeAutoEncodeLastTriggerKey = '';
-      if (origin === 'manual') {
-        composeDraft = '';
+      if (mode === 'compact') {
+        if (encodedNode.trim()) {
+          seedComposeInjectedNode(sessionId, encodedNode);
+        }
+
+        composeMessages = [];
+        composeAutoEncodeLastTriggerKey = '';
+        if (origin === 'manual') {
+          composeDraft = '';
+        }
+      } else {
+        composeAutoEncodeLastTriggerKey = encodedThreadSignature;
       }
 
       snapshotActiveComposeTab();
@@ -5433,8 +5466,8 @@
     }
   }
 
-  async function submitCompose() {
-    await encodeSaveAndContinueComposeThread('manual');
+  async function submitCompose(mode: ComposeEncodeMode = 'compact') {
+    await encodeComposeThread('manual', mode);
   }
 
   $: {
@@ -5449,7 +5482,7 @@
       && autoSignature !== composeAutoEncodeLastTriggerKey
     ) {
       composeAutoEncodeLastTriggerKey = autoSignature;
-      void encodeSaveAndContinueComposeThread('auto');
+      void encodeComposeThread('auto', 'compact');
     }
   }
 
@@ -5941,7 +5974,7 @@
 
   <CollapseCard
     data={cardData}
-    visible={cardVisible}
+    visible={cardVisible && !composeContinueChooserOpen}
     summary={currentTransmutation}
     transmuting={transmuting}
     transmuteError={transmuteError}
@@ -6147,7 +6180,7 @@
 
   <ComposeDrawer
     {...composeLiveUiProps}
-    open={composeOpen}
+    open={composeOpen || composePhase === 'entering'}
     bind:sessionId={composeSessionId}
     bind:draft={composeDraft}
     messages={composeMessages}
@@ -6169,7 +6202,6 @@
     toggleComposePasteNode={toggleComposePasteNode}
     clearComposeConversation={clearComposeConversation}
     saveComposePastedNode={saveComposePastedNode}
-    submitCompose={submitCompose}
   />
 
   <CalibrateDrawer

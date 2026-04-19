@@ -23,12 +23,12 @@
         setAutoEncodeEnabled(checked);
       }}
     />
-    <span>auto encode + save + continue</span>
+    <span>auto compact thread</span>
   </label>
 
   <label class="compose-chat-settings-threshold" class:disabled={!autoEncodeEnabled}>
     <div class="compose-chat-settings-threshold-head">
-      <span>autosave threshold</span>
+      <span>auto compact threshold</span>
       <strong>{autoEncodeThresholdPercent}%</strong>
     </div>
     <input
@@ -53,8 +53,8 @@
     margin-top: 2px;
     margin-bottom: 3px;
     border-radius: 10px;
-    border: 0.5px solid rgba(154, 186, 216, 0.34);
-    background: linear-gradient(180deg, rgba(56, 81, 106, 0.28), rgba(38, 56, 76, 0.24));
+    border: 0.5px solid rgba(112, 149, 176, 0.22);
+    background: linear-gradient(180deg, rgba(23, 39, 56, 0.62), rgba(17, 29, 42, 0.58));
     padding: 8px 9px;
     display: grid;
     gap: 8px;
@@ -69,11 +69,11 @@
     font-size: 8px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(215, 231, 245, 0.9);
+    color: rgba(195, 216, 233, 0.82);
   }
 
   .compose-chat-settings-head small {
-    color: rgba(195, 216, 236, 0.68);
+    color: rgba(171, 195, 214, 0.56);
   }
 
   .compose-chat-settings-row {
@@ -82,7 +82,7 @@
     gap: 8px;
     font-size: 9px;
     letter-spacing: 0.04em;
-    color: rgba(220, 235, 249, 0.9);
+    color: rgba(196, 216, 232, 0.84);
     text-transform: lowercase;
     cursor: pointer;
   }
@@ -110,14 +110,14 @@
     gap: 8px;
     font-size: 9px;
     letter-spacing: 0.04em;
-    color: rgba(218, 233, 248, 0.88);
+    color: rgba(194, 215, 231, 0.82);
     text-transform: lowercase;
   }
 
   .compose-chat-settings-threshold-head strong {
     font-size: 10px;
     letter-spacing: 0.05em;
-    color: rgba(242, 248, 255, 0.96);
+    color: rgba(221, 235, 245, 0.9);
   }
 
   .compose-chat-settings-threshold input[type='range'] {
@@ -130,7 +130,7 @@
     margin: 0;
     font-size: 8px;
     letter-spacing: 0.03em;
-    color: rgba(194, 213, 232, 0.74);
+    color: rgba(164, 186, 205, 0.62);
     text-transform: lowercase;
   }
 

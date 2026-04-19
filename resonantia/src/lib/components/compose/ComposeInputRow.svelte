@@ -22,8 +22,9 @@
     }}
   ></textarea>
   <button
+    type="button"
     class="drawer-btn submit compose-send"
-    on:click={sendComposeMessage}
+    on:click={() => void sendComposeMessage()}
     disabled={loading || replyLoading || !draft.trim() || !sessionId.trim()}
   >
     {replyLoading ? 'thinking…' : 'send'}
